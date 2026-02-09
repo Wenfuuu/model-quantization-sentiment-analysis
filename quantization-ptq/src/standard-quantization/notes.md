@@ -8,6 +8,12 @@ Metode Quantization
 
 Dynammic PTQ udah cukup karna fokus researchnya gimana quantization ngaruh ke bobot internal modelnya dan performancenya bukan optimisasi spesifik deployment
 
-09-feb-2026
+| (testcase masih hardcode, masih pake model yang kecil, belum di finetuning) |
 - researchnya bisa di bilang bestnya sih int8, latencynya paling gg dan akurasinya juga masih bagus. 
 - fp16 malah kurang dibagian latency (malah makin lama). ini pas di browsing dapatnya mungkin karna hardware issue karna most of cpu itu ga bisa itung langsung fp16 tapi flownya fp16 -> convert ke fp32 -> hitung -> convert balik makanya maybe itu yang bikin agak lama
+
+![alt text](images/first.png)
+
+| (testcase dari dataset tweets INA) | 
+
+
