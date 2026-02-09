@@ -1,0 +1,22 @@
+# ====================================
+# Requirements for Quantization Research
+# ====================================
+
+# Core ML Libraries
+torch>=2.0.0
+transformers>=4.30.0
+
+# Data Analysis
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Statistical Analysis
+scipy>=1.10.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Jupyter
+jupyter>=1.0.0
+ipykernel>=6.0.0
