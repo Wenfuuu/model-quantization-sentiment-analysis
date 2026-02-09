@@ -33,7 +33,6 @@ ENV/
 *.bin
 *.onnx
 *.safetensors
-outputs/
 model_output/
 models/
 checkpoints/
