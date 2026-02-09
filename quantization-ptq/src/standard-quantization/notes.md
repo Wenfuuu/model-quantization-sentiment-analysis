@@ -19,6 +19,13 @@ Dynammic PTQ udah cukup karna fokus researchnya gimana quantization ngaruh ke bo
 dengan config 
 - num_inference_runs = 1
 - warmup_runs = 5
+
 ![alt text](images/first-quantization-testcase-1of30.png)
 
 INT8 ada pengurangan accuracy sebesar 0.25% tapi latency lebih cepat 17.80%
+FP32 masih konsisten tapi dia lama banget, plus nya ukurannya kecil (hampir sama kayak int8)
+
+Kesimpulan :
+FP32 -> normal
+FP16 -> ukuran lebih kecil, akurasi sama, latency lebih lama
+INT8 -> ukuran lebih kecil (kurang dikit dari ukuran FP16), akurasi sedikit turun, latency lebih cepat
