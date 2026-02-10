@@ -16,7 +16,7 @@ Dynammic PTQ udah cukup karna fokus researchnya gimana quantization ngaruh ke bo
 
 ![alt text](images/first.png)
 
-## testcase dari dataset tweets INA
+## testcase dari dataset tweets INA 
 788 Sample (1/30 dari datasets)
 dengan config
 
