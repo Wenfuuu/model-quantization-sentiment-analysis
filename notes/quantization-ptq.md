@@ -49,3 +49,21 @@ Ignore aja kenapa accuracynya rendah karna disini kita fokusnya perbedaan FP32 d
 Kesimpulan : 
 * INT4 ternyata drop banget akurasinya, ga worth it dengan yang lain. masih bakalan lebih bagus dengan INT8 doang
 * INT4 sepertinya harus di train ulang atau di finetune ulang, nah ini bakalan menjadi QAT bukan PTQ lagi, jadi PTQ gabakaln relevan untuk quantize ke INT4 karna pasti 100% bakaaln meledak 
+
+# CHECKPOINT 
+* FP16 -> cuman kecilin model, bisa lebih lama dari yang fp32 kalau masalah latency
+* INT8 -> kecilin model, lebih cepat, tapi akurasinya bisa kurang dikit
+* INT4 -> akurasinya bisa drop banget, jadinya ga worth it untuk dipake
+
+## Finetuned Model + test.tsv datasets
+* inference = 20 
+* warmup = 5
+* sample total = 500 
+
+![alt text](../quantization-ptq/src/standard-quantization/images/finetuned-test-tsv-dataset.png)
+
+* somehow int8 lebih tinggi 0.20 dibandingkan fp32 sama fp16, berbeda dengan hasil eksseriment sebelumnya
+* int4 tetap turun untuk accuracynya, masih sama seperti sebelumnya
+* latencynya int 8 tercepat dibandingkan yang lain (expectnya sih int4 yang paling cepat tapi ternyata engga), tapi latency yang paling konsisten itu latency punya int4, tetapi tetap lama daripada int8
+* jadinya muncul pertanyaan kneapa int8 bisa lebih tinggi daripada fp32 
+
