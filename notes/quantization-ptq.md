@@ -67,3 +67,17 @@ Kesimpulan :
 * latencynya int 8 tercepat dibandingkan yang lain (expectnya sih int4 yang paling cepat tapi ternyata engga), tapi latency yang paling konsisten itu latency punya int4, tetapi tetap lama daripada int8
 * jadinya muncul pertanyaan kneapa int8 bisa lebih tinggi daripada fp32 
 
+| kenapa int8 bisa lebih tinggi daripada fp32, fp16 sedangkan int4 lebih rendah daripada int8 ?
+
+
+## Finetuned Model + Tweet datasets
+* inference = 2
+* warmup = 5
+* sample total = 1182 (1 banding 20)
+
+![alt text](../quantization-ptq/src/standard-quantization/images/finetuned-tweet.png)
+
+* int4 accuracynya paling tinggi dibandingkan ketiga itu
+* fp32, fp16, int8 masih konsisten dengan alur selama eksperimen (kecuali finetuned yang sebelumya dengan datatset test.tsv)
+
+| kenapa int4 bisa lebih tinggi accuracynya dibandingkan yang lain?
