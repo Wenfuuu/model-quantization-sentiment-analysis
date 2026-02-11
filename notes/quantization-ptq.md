@@ -33,7 +33,7 @@ Kesimpulan :
 * FP16 -> ukuran lebih kecil, akurasi sama, latency lebih lama
 * INT8 -> ukuran lebih kecil (kurang dikit dari ukuran FP16), akurasi sedikit turun, latency lebih cepat
 
-## Ganti model ke indobert base (standard) + INT4
+## Ganti model ke indobert base (standard) + INT4 (Tweets Dataset)
 788 Sample (1/30 dari datasets)
 dengan config
 
@@ -59,6 +59,7 @@ Kesimpulan :
 * inference = 20 
 * warmup = 5
 * sample total = 500 
+* model = indobert finetuned
 
 ![alt text](../quantization-ptq/src/standard-quantization/images/finetuned-test-tsv-dataset.png)
 
@@ -69,11 +70,11 @@ Kesimpulan :
 
 | kenapa int8 bisa lebih tinggi daripada fp32, fp16 sedangkan int4 lebih rendah daripada int8 ?
 
-
 ## Finetuned Model + Tweet datasets
 * inference = 2
 * warmup = 5
 * sample total = 1182 (1 banding 20)
+* model = indobert finetuned
 
 ![alt text](../quantization-ptq/src/standard-quantization/images/finetuned-tweet.png)
 
@@ -81,3 +82,19 @@ Kesimpulan :
 * fp32, fp16, int8 masih konsisten dengan alur selama eksperimen (kecuali finetuned yang sebelumya dengan datatset test.tsv)
 
 | kenapa int4 bisa lebih tinggi accuracynya dibandingkan yang lain?
+
+## Original + test.tsv datasets
+* inference = 20
+* warmup = 5
+* sample total = 500
+* model = indobert original base p2
+
+![alt text](../quantization-ptq/src/standard-quantization/images/original-test-tsv.png)
+
+* int8 somehow bisa lebih tinggi daripada fp32 dan fp16
+* int4 turun lumayan banyak 
+
+# Checkpoint 2
+
+* kesimpulan sementara, apakah karna dataset test.tsv makanya int8 bisa lebih tinggi daripada fp32 dan fp16? karna pada saat pakai test.tsv si int8 selalu diatas fp32 dan fp16
+* 
