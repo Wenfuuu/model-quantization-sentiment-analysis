@@ -44,6 +44,14 @@ Detail about PTQ Quantization Notes [quantization-ptq.md](https://github.com/Wen
 
 ### RECAP PTQ Quantization
 * INT8 selalu yang paling menjadi stabil dibandingkan yang lain dimana kecilin model size selalu works, accuracy ga gimana beda jauh dan lebih stabil
+* Problem : 
+    * Kenapa tiap kali pakai clean datasets dibagian INT8 nya selalu naik 0.20 ?
+    * Kenapa yang finetuned + tweets datasets INT4 accuracynya bisa naik sedangkan berdasarkan experiment INT4 harusnya paling kecil accuracynya atau anjlok ? 
+    
+    | ANSWER : 
+    * Regularization Effect -> Quantization bikin bobot jadi lebih kasar -> model jadi kurang overfit -> generalisasi naik
+    * Dataset Clean = Noisenya rendah -> jadi mudah diprediksi (jadinya mungkin karna dataset karna tiap kali pake dataset clean dia selalu naik 0.20 di bagian INT8nya)
+    * Kalau dari paper PTQ vs QAT, INT4 gabisa dianggap beneran bagus karna dia itu terlalu aggresif apa lagi untuk bagian PTQ sudah pasti gagal  
 
 ## PTQ vs QAT 
 Based on paper 
