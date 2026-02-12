@@ -2,6 +2,17 @@
 ## Roadmap
 ![alt text](images/roadmap.png)
 
+## Task 
+
+### Bertrand
+![alt text](images/bt-progress.png)
+
+### Helena
+![alt text](images/as-progress.png)
+
+### Collin
+![alt text](images/mv-progress.png)
+
 ## Finetune Model
 * dataset : 
 * model : 
