@@ -35,3 +35,16 @@ QAT Techniques](https://arxiv.org/pdf/2411.06084)
 * Mixed-Precision -> tidak semua layernya dipukul rata jadi INT4. mereka cek layer mana yang sebenarnya sensitif (penting banget) yang harus di keep presisi tinggi dan mana yang aman untuk dikompress ke INT4
 * Adaptasi -> Selama QAT, model belajar menyesuaikan bobotnya secara aktif untuk meminimalkan loss akibat resolusi yang rendah
 * ini jadinya paling goat, ukurannya turun smpe 68%, througputnya 3x lipat, hemat daya 60%, akurasinya tetap terjaga dalam batas 6% dari model aslinya (masih berkurang tapi bisa ditoleransi)
+
+## Top Recap
+top accuracy 
+1. QAT INT8
+2. PTQ INT8
+3. QAT INT4
+4. PTQ INT4
+
+top speed 
+1. QAT INT4
+2. PTQ INT4
+3. QAT INT8
+4. PTQ INT8
