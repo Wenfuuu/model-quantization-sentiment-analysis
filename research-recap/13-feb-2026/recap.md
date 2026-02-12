@@ -45,6 +45,10 @@ Detail about PTQ Quantization Notes [quantization-ptq.md](https://github.com/Wen
 ### RECAP PTQ Quantization
 * INT8 selalu yang paling menjadi stabil dibandingkan yang lain dimana kecilin model size selalu works, accuracy ga gimana beda jauh dan lebih stabil
 
+## PTQ vs QAT 
+Based on paper 
+[click here](https://github.com/Wenfuuu/model-quantization-sentiment-analysis/blob/original/notes/ptq-vs-qat.md)
+
 ## QAT Quantization
 
 ## Hybrid Quantization
