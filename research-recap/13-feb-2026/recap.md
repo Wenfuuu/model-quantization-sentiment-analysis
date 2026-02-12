@@ -21,7 +21,7 @@ Detail about PTQ Quantization Notes [quantization-ptq.md](https://github.com/Wen
 
 | INT8 masih menjadi the best quantization dan paling worth it
 
-## Original + Clean Datasets
+### Original + Clean Datasets
 * INT8 lebih tinggi accuracy 0.20 daripada yang lain (harus dipastikan kenapa)
 * sisanya sesuai ekspektasi  
 
