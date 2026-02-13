@@ -86,6 +86,9 @@
     * Generate confusion matrix untuk analisis per-class performance
     * Generate classification report (precision, recall, f1 per class)
     * Save fine-tuned model dan tokenizer
+ 
+    source paper for finetuning:
+    * [BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding](https://arxiv.org/abs/1810.04805)
 
 ## PTQ Quantization
 Detail about PTQ Quantization Notes [quantization-ptq.md](https://github.com/Wenfuuu/model-quantization-sentiment-analysis/blob/original/notes/quantization-ptq.md)
@@ -136,6 +139,51 @@ Based on paper
 [click here](https://github.com/Wenfuuu/model-quantization-sentiment-analysis/blob/original/notes/ptq-vs-qat.md)
 
 ## QAT Quantization
+
+* Pendekatan : Quantization-Aware Training (QAT) menggunakan PyTorch dengan fake quantization
+* Model : IndoBERT fine-tuned pada SMSA dataset
+* Target : INT8 quantization
+* Pipeline : 
+  - Load finetuned FP32 model
+  - Prepare model untuk QAT menggunakan `torch.quantization.prepare_qat()`
+  - Training ulang model dengan fake quantization nodes:
+    - Simulates quantization effects during training
+    - Model learns to be robust terhadap quantization errors
+    - Weights dan activations di-quantize ke INT8 range selama forward pass
+  - Freeze quantization observers sebelum evaluation
+  - Convert model ke quantized version menggunakan `torch.quantization.convert()`
+  - Evaluate performance (accuracy, latency, model size)
+
+* Test Configuration :
+  - 500 samples dari test set
+  - 5 warmup runs
+  - 20 inference runs per sample untuk measure latency
+
+* Hasil Perbandingan FP32 vs FP16 vs INT8 QAT :
+
+  <img width="1600" height="682" alt="image" src="https://github.com/user-attachments/assets/ad5bc856-4285-43f1-8564-797d006b8cc3" />
+
+* Findings :
+  - **Accuracy meningkat** dari 87.60% (FP32) → 88.60% (INT8 QAT) (+1.00%)
+    - QAT approach membantu model learn robust representations
+    - Training dengan quantization noise bertindak sebagai regularization
+  - **Model size tidak mengecil** - masih ~475 MB (seharusnya ~120 MB untuk true INT8)
+  - **Latency tidak berkurang** - masih ~4.2 ms (seharusnya lebih cepat untuk INT8)
+
+* Problem yang ditemukan :
+  - **PyTorch fake quantization** hanya mensimulasikan quantization effect selama training
+  - Model masih tersimpan dalam **FP32 format** setelah conversion
+  - PyTorch `torch.quantization.convert()` **tidak fully support** untuk convert ke true INT8 binary format
+  - Tidak ada actual compression atau speedup yang terjadi
+  - Weights masih menggunakan 32-bit representation, hanya dengan quantized values
+
+* Next Steps (Work in Progress) :
+  - Research methods untuk convert PyTorch QAT model ke **true INT8 format**
+  - Eksplorasi konversi model ke **ONNX format**:
+    - ONNX Runtime supports true INT8 quantization
+    - Dapat menggunakan `torch.onnx.export()` untuk convert PyTorch model
+    - Apply ONNX quantization tools untuk actual INT8 conversion
+  - Goal: Achieve actual model compression (~4x size reduction) dan inference speedup dengan maintain accuracy
 
 ## Hybrid Quantization
 
