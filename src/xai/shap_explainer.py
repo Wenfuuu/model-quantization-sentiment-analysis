@@ -40,16 +40,9 @@ class SHAPExplainer:
 
         shap_values = self.explain(text, max_evals=max_evals)
 
-        plt.figure(figsize=(14, 6))
-        shap.plots.bar(shap_values[0], show=False)
-        plt.title("SHAP Feature Importance")
-        plt.tight_layout()
-        plt.savefig(str(output_path), dpi=150, bbox_inches='tight')
-        plt.close()
-
-        token_importance = {}
         predicted_class = int(np.argmax(self.predict_proba(text)))
 
+        token_importance = {}
         if hasattr(shap_values[0], 'data') and hasattr(shap_values[0], 'values'):
             data = shap_values[0].data
             values = shap_values[0].values
@@ -57,7 +50,25 @@ class SHAPExplainer:
                 if isinstance(token, str) and token.strip():
                     token_importance[token] = float(values[i][predicted_class])
 
-        sorted_importance = sorted(token_importance.items(), key=lambda x: abs(x[1]), reverse=True)
+        sorted_importance = sorted(token_importance.items(), key=lambda x: abs(x[1]), reverse=True)[:15]
+
+        if sorted_importance:
+            tokens = [t[0] for t in sorted_importance]
+            weights = [t[1] for t in sorted_importance]
+            colors = ['#ff4444' if w < 0 else '#4444ff' for w in weights]
+
+            fig, ax = plt.subplots(figsize=(12, max(4, len(tokens) * 0.4)))
+            y_pos = range(len(tokens))
+            ax.barh(y_pos, weights, color=colors)
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(tokens)
+            ax.invert_yaxis()
+            ax.set_xlabel(f"SHAP value (impact on {self.label_names[predicted_class]})")
+            ax.set_title(f"SHAP Token Importance - Predicted: {self.label_names[predicted_class]}")
+            ax.axvline(x=0, color='black', linewidth=0.5)
+            plt.tight_layout()
+            plt.savefig(str(output_path), dpi=150, bbox_inches='tight')
+            plt.close()
 
         return {
             "predicted_label": self.label_names[predicted_class],
