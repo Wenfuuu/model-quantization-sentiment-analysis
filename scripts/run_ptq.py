@@ -189,24 +189,70 @@ def run_ptq_experiment(version_key):
     }
 
 
+def interactive_menu():
+    print("\n" + "=" * 60)
+    print("  PTQ QUANTIZATION EXPERIMENT RUNNER")
+    print("=" * 60)
+
+    print("\n  Select Model:")
+    print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
+    print("  [2] Finetuned IndoBERT (indobert-fp32-smsa-3label)")
+    print("  [3] Both")
+
+    model_choice = input("\n  Enter choice (1/2/3): ").strip()
+
+    print("\n  Select Dataset:")
+    print("  [1] SMSA (test.tsv)")
+    print("  [2] Tweets (INA_TweetsPPKM)")
+    print("  [3] Both")
+
+    dataset_choice = input("\n  Enter choice (1/2/3): ").strip()
+
+    models = []
+    if model_choice == "1":
+        models = ["original"]
+    elif model_choice == "2":
+        models = ["finetuned"]
+    else:
+        models = ["original", "finetuned"]
+
+    datasets = []
+    if dataset_choice == "1":
+        datasets = ["smsa"]
+    elif dataset_choice == "2":
+        datasets = ["tweets"]
+    else:
+        datasets = ["smsa", "tweets"]
+
+    selected = []
+    for m in models:
+        for d in datasets:
+            selected.append(f"{m}_{d}")
+
+    return selected
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        selected = sys.argv[1:]
-        for key in selected:
-            if key not in EXPERIMENT_CONFIGS:
-                print(f"Unknown version: {key}")
-                print(f"Available: {list(EXPERIMENT_CONFIGS.keys())}")
-                sys.exit(1)
+        if sys.argv[1] == "--all":
+            selected = list(EXPERIMENT_CONFIGS.keys())
+        else:
+            selected = sys.argv[1:]
+            for key in selected:
+                if key not in EXPERIMENT_CONFIGS:
+                    print(f"Unknown version: {key}")
+                    print(f"Available: {list(EXPERIMENT_CONFIGS.keys())}")
+                    sys.exit(1)
     else:
-        selected = list(EXPERIMENT_CONFIGS.keys())
-    
+        selected = interactive_menu()
+
     print("\n" + "=" * 80)
     print(f"STARTING PTQ EXPERIMENTS - {len(selected)} VERSION(S) TO RUN")
     print("=" * 80)
     for i, key in enumerate(selected, 1):
         print(f"  [{i}/{len(selected)}] {key}")
     print("=" * 80 + "\n")
-    
+
     all_results = {}
     for idx, version_key in enumerate(selected, 1):
         print("\n" + "#" * 80)
@@ -214,10 +260,10 @@ if __name__ == "__main__":
         print("#" * 80 + "\n")
         result = run_ptq_experiment(version_key)
         all_results[version_key] = result
-        print(f"\n✓ Completed [{idx}/{len(selected)}]: {version_key}")
-    
+        print(f"\n  Completed [{idx}/{len(selected)}]: {version_key}")
+
     print_section("ALL EXPERIMENTS COMPLETED")
     for key, res in all_results.items():
         print(f"\n{key}:")
-        print(f"  Accuracy: FP32={res['fp32_results']['accuracy']*100:.2f}% | INT8={res['int8_results']['accuracy']*100:.2f}% | INT4={res['int4_results']['accuracy']*100:.2f}%")
-        print(f"  Size: FP32={res['fp32_size_mb']:.1f}MB | INT8={res['int8_size_mb']:.1f}MB | INT4={res['int4_size_mb']:.1f}MB")
+        print(f"  Accuracy: FP32={res['fp32_results']['accuracy']*100:.2f}% | FP16={res['fp16_results']['accuracy']*100:.2f}% | INT8={res['int8_results']['accuracy']*100:.2f}% | INT4={res['int4_results']['accuracy']*100:.2f}%")
+        print(f"  Size: FP32={res['fp32_size_mb']:.1f}MB | FP16={res['fp16_size_mb']:.1f}MB | INT8={res['int8_size_mb']:.1f}MB | INT4={res['int4_size_mb']:.1f}MB")
