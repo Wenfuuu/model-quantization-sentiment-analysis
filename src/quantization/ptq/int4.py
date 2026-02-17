@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import copy
+from src.config import DEVICE
 
 
 class INT4Quantizer:
@@ -13,7 +14,7 @@ class INT4Quantizer:
         tensor_float = tensor.float()
         abs_max = tensor_float.abs().max()
         if abs_max == 0:
-            return torch.zeros_like(tensor_float, dtype=torch.int8), torch.tensor(1.0)
+            return torch.zeros_like(tensor_float, dtype=torch.int8), torch.tensor(1.0, device=tensor.device)
         scale = abs_max / self.qmax
         quantized = torch.clamp(torch.round(tensor_float / scale), self.qmin, self.qmax)
         quantized = quantized.to(torch.int8)
@@ -34,6 +35,7 @@ class INT4Quantizer:
                     replace_linear_with_int4(child, f"{name}.{child_name}" if name else child_name)
 
         replace_linear_with_int4(model_int4)
+        model_int4 = model_int4.to(DEVICE)
         return model_int4
 
 

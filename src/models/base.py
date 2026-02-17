@@ -1,16 +1,18 @@
 import time
 import torch
-from src.config import LABELS
+from src.config import LABELS, DEVICE
 
 
 class BaseModel:
-    def __init__(self, model, tokenizer):
-        self.model = model
+    def __init__(self, model, tokenizer, device=None):
+        self.device = device if device else DEVICE
+        self.model = model.to(self.device)
         self.tokenizer = tokenizer
         self.model.eval()
 
     def predict(self, text, use_fp16=False):
         inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         if use_fp16:
             inputs = {k: v.half() if v.dtype == torch.float32 else v for k, v in inputs.items()}

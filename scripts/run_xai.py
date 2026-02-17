@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import EXPERIMENT_CONFIGS, LABELS
+from src.config import EXPERIMENT_CONFIGS, LABELS, DEVICE
 from src.data import load_smsa_dataset, load_tweets_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
@@ -193,7 +193,7 @@ def run_xai_experiment(version_key, precisions, num_samples):
             ptq = PTQQuantizer(base_model.model)
             model_int8, int8_time = ptq.quantize_int8()
             print(f"\n  INT8 quantization: {int8_time:.2f}s")
-            int8_model = BaseModel(model_int8, base_model.tokenizer)
+            int8_model = BaseModel(model_int8, base_model.tokenizer, device=torch.device("cpu"))
             run_xai_for_model(int8_model, "int8", samples, output_dir)
 
         elif precision == "int4":
