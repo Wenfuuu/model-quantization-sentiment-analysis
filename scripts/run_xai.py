@@ -89,7 +89,7 @@ def generate_lime_comparison(all_lime, samples, precisions, output_dir):
         if len(precisions) == 1:
             axes = [axes]
 
-        fig.suptitle(f"LIME Comparison - Sample {sample_idx + 1}\n\"{samples[sample_idx]['text'][:80]}...\"\nExpected: {samples[sample_idx]['expected']}", fontsize=12, fontweight='bold')
+        fig.suptitle(f"LIME Comparison - Sample {sample_idx + 1}\n\"{samples[sample_idx]['text']}\"\nExpected: {samples[sample_idx]['expected']}", fontsize=10, fontweight='bold', wrap=True)
 
         for col, precision in enumerate(precisions):
             ax = axes[col]
@@ -126,7 +126,7 @@ def generate_shap_comparison(all_shap, samples, precisions, output_dir):
         if len(precisions) == 1:
             axes = [axes]
 
-        fig.suptitle(f"SHAP Comparison - Sample {sample_idx + 1}\n\"{samples[sample_idx]['text'][:80]}...\"\nExpected: {samples[sample_idx]['expected']}", fontsize=12, fontweight='bold')
+        fig.suptitle(f"SHAP Comparison - Sample {sample_idx + 1}\n\"{samples[sample_idx]['text']}\"\nExpected: {samples[sample_idx]['expected']}", fontsize=10, fontweight='bold', wrap=True)
 
         for col, precision in enumerate(precisions):
             ax = axes[col]
@@ -283,7 +283,7 @@ def run_xai_experiment(version_key, precisions, num_samples):
     samples = select_samples(all_samples, num_samples)
     print(f"\nSelected {len(samples)} representative samples:")
     for i, s in enumerate(samples, 1):
-        print(f"  {i}. [{s['expected']}] \"{s['text'][:60]}...\"")
+        print(f"  {i}. [{s['expected']}] \"{s['text']}\"")
 
     print(f"\nLoading model: {config['model_id']}")
     base_model = ModelManager.load_model(config['model_id'])
