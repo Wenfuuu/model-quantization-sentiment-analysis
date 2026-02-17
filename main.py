@@ -49,8 +49,10 @@ def run_xai():
         run_xai_experiment(key, precisions, num_samples)
 
     print_section("XAI ANALYSIS COMPLETED")
-    print("LIME results: HTML files (open in browser to see word-level importance)")
-    print("SHAP results: PNG bar charts (SHAP value per token)")
+    print("Results saved to: outputs/{experiment}/xai/comparison/")
+    print("  - lime_comparison_sample_N.png : LIME side-by-side across precisions")
+    print("  - shap_comparison_sample_N.png : SHAP side-by-side across precisions")
+    print("  - prediction_summary.png       : Prediction correctness table")
 
 
 def main():
