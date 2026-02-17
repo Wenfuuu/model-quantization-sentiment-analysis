@@ -15,6 +15,7 @@ from src.quantization.utils import save_quantized_model, get_model_size
 from src.utils import print_section
 from src.models.base import BaseModel
 from src.evaluation.metrics import statistical_test, confidence_comparison
+from src.config import DEVICE
 
 warnings.filterwarnings('ignore')
 
@@ -34,6 +35,9 @@ def run_ptq_experiment(version_key):
     
     print(f"\nPyTorch Version: {torch.__version__}")
     print(f"CUDA Available: {torch.cuda.is_available()}")
+    print(f"Device: {DEVICE}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
     
     print(f"\nLoading model: {config['model_id']}")
     base_model = ModelManager.load_model(config['model_id'])
@@ -94,7 +98,7 @@ def run_ptq_experiment(version_key):
     print(f"INT8 model saved: {int8_path} ({int8_size_mb:.2f} MB)")
     print(f"Size Reduction: {(1 - int8_size_mb/fp32_size_mb)*100:.2f}%")
     
-    base_model_int8 = BaseModel(model_int8, base_model.tokenizer)
+    base_model_int8 = BaseModel(model_int8, base_model.tokenizer, device=torch.device("cpu"))
     evaluator_int8 = ModelEvaluator(base_model_int8)
     int8_results = evaluator_int8.evaluate(test_samples, num_runs=num_runs, warmup=warmup)
     
