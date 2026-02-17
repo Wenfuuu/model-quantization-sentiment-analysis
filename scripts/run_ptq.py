@@ -200,10 +200,21 @@ if __name__ == "__main__":
     else:
         selected = list(EXPERIMENT_CONFIGS.keys())
     
+    print("\n" + "=" * 80)
+    print(f"STARTING PTQ EXPERIMENTS - {len(selected)} VERSION(S) TO RUN")
+    print("=" * 80)
+    for i, key in enumerate(selected, 1):
+        print(f"  [{i}/{len(selected)}] {key}")
+    print("=" * 80 + "\n")
+    
     all_results = {}
-    for version_key in selected:
+    for idx, version_key in enumerate(selected, 1):
+        print("\n" + "#" * 80)
+        print(f"# RUNNING EXPERIMENT [{idx}/{len(selected)}]: {version_key.upper()}")
+        print("#" * 80 + "\n")
         result = run_ptq_experiment(version_key)
         all_results[version_key] = result
+        print(f"\n✓ Completed [{idx}/{len(selected)}]: {version_key}")
     
     print_section("ALL EXPERIMENTS COMPLETED")
     for key, res in all_results.items():

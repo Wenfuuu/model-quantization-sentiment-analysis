@@ -1,3 +1,0 @@
-- lanjutin progress
-- arxiv itu temporary doang -> jadi intinya blm verified, mesti cari scholar
-- bkin artikel utk web socs? terutama utk topik "Quantization" dengan bhs manusiawi

@@ -1,5 +1,5 @@
 import time
-from .dynamic import DynamicQuantizer
+from .int8 import INT8Quantizer
 from .fp16 import FP16Quantizer
 from .int4 import INT4Quantizer
 
@@ -16,7 +16,7 @@ class PTQQuantizer:
 
     def quantize_int8(self):
         start_time = time.perf_counter()
-        quantized_model = DynamicQuantizer.quantize(self.model)
+        quantized_model = INT8Quantizer.quantize(self.model)
         end_time = time.perf_counter()
         return quantized_model, end_time - start_time
 
