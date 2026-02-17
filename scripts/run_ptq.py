@@ -20,13 +20,21 @@ from src.config import DEVICE
 warnings.filterwarnings('ignore')
 
 
-def run_ptq_experiment(version_key):
+def run_ptq_experiment(version_key, num_runs_override=None):
     config = EXPERIMENT_CONFIGS[version_key]
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    num_runs = config["num_inference_runs"]
-    warmup = config["warmup_runs"]
+    if num_runs_override is not None:
+        num_runs = num_runs_override
+        warmup = 0 if num_runs_override == 0 else config["warmup_runs"]
+    else:
+        num_runs = config["num_inference_runs"]
+        warmup = config["warmup_runs"]
+    
+    if num_runs == 0:
+        num_runs = 1
+        warmup = 0
     
     print_section(f"EXPERIMENT: {version_key}")
     print(f"Model: {config['model_id']}")
@@ -212,6 +220,9 @@ def interactive_menu():
 
     dataset_choice = input("\n  Enter choice (1/2/3): ").strip()
 
+    num_runs_str = input("\n  Number of inference runs per sample (default 20, 0 = skip latency benchmark): ").strip()
+    num_runs_input = int(num_runs_str) if num_runs_str else None
+
     models = []
     if model_choice == "1":
         models = ["original"]
@@ -233,10 +244,11 @@ def interactive_menu():
         for d in datasets:
             selected.append(f"{m}_{d}")
 
-    return selected
+    return selected, num_runs_input
 
 
 if __name__ == "__main__":
+    num_runs_override = None
     if len(sys.argv) > 1:
         if sys.argv[1] == "--all":
             selected = list(EXPERIMENT_CONFIGS.keys())
@@ -248,7 +260,7 @@ if __name__ == "__main__":
                     print(f"Available: {list(EXPERIMENT_CONFIGS.keys())}")
                     sys.exit(1)
     else:
-        selected = interactive_menu()
+        selected, num_runs_override = interactive_menu()
 
     print("\n" + "=" * 80)
     print(f"STARTING PTQ EXPERIMENTS - {len(selected)} VERSION(S) TO RUN")
@@ -262,7 +274,7 @@ if __name__ == "__main__":
         print("\n" + "#" * 80)
         print(f"# RUNNING EXPERIMENT [{idx}/{len(selected)}]: {version_key.upper()}")
         print("#" * 80 + "\n")
-        result = run_ptq_experiment(version_key)
+        result = run_ptq_experiment(version_key, num_runs_override=num_runs_override)
         all_results[version_key] = result
         print(f"\n  Completed [{idx}/{len(selected)}]: {version_key}")
 
