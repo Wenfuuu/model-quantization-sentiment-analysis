@@ -82,3 +82,6 @@ Dikembangkan pipeline baru untuk mendapatkan **TRUE INT8 quantization**:
 - Result: **TRUE INT8 quantization** dengan real benefits
 
 | INT8 ONNX pipeline berhasil achieve TRUE quantization benefits, production-ready untuk CPU deployment
+
+### PTQ Xai
+![alt text](images/XAI.png)
