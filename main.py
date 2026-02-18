@@ -36,20 +36,21 @@ def run_ptq():
 
 
 def run_xai():
-    experiment_keys, precisions, num_samples = xai_menu()
+    experiment_key, precisions, num_samples, divergence_samples = xai_menu()
 
     print("\n" + "=" * 80)
-    print(f"STARTING XAI ANALYSIS - {len(experiment_keys)} EXPERIMENT(S)")
+    print(f"STARTING XAI ANALYSIS: {experiment_key}")
     print(f"Precisions: {', '.join(precisions)}")
-    print(f"Samples per precision: {num_samples}")
+    if divergence_samples:
+        print(f"Mode: Divergence analysis ({len(divergence_samples)} samples)")
+    else:
+        print(f"Mode: Auto-select ({num_samples} samples)")
     print("=" * 80)
 
-    for idx, key in enumerate(experiment_keys, 1):
-        print(f"\n[{idx}/{len(experiment_keys)}] {key}")
-        run_xai_experiment(key, precisions, num_samples)
+    run_xai_experiment(experiment_key, precisions, num_samples, divergence_samples)
 
     print_section("XAI ANALYSIS COMPLETED")
-    print("Results saved to: outputs/{experiment}/xai/comparison/")
+    print(f"Results saved to: outputs/{experiment_key}/xai/comparison/")
     print("  - lime_comparison_sample_N.png : LIME side-by-side across precisions")
     print("  - shap_comparison_sample_N.png : SHAP side-by-side across precisions")
     print("  - prediction_summary.png       : Prediction correctness table")
