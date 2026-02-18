@@ -1,0 +1,47 @@
+{
+    "model_type": "FP32",
+    "provider": "CUDAExecutionProvider",
+    "overall_metrics": {
+        "accuracy": 0.882,
+        "precision": 0.8861139577610609,
+        "recall": 0.882,
+        "f1": 0.879449209842683,
+        "total_samples": 500,
+        "total_time_seconds": 0.6657800674438477,
+        "avg_time_per_batch_ms": 20.80562710762024,
+        "samples_per_second": 750.9987523652776
+    },
+    "classification_report": {
+        "Positive": {
+            "precision": 0.8807339449541285,
+            "recall": 0.9230769230769231,
+            "f1-score": 0.9014084507042254,
+            "support": 208.0
+        },
+        "Neutral": {
+            "precision": 0.9523809523809523,
+            "recall": 0.6818181818181818,
+            "f1-score": 0.7947019867549667,
+            "support": 88.0
+        },
+        "Negative": {
+            "precision": 0.863013698630137,
+            "recall": 0.9264705882352942,
+            "f1-score": 0.8936170212765958,
+            "support": 204.0
+        },
+        "accuracy": 0.882,
+        "macro avg": {
+            "precision": 0.898709531988406,
+            "recall": 0.8437885643767998,
+            "f1-score": 0.8632424862452627,
+            "support": 500.0
+        },
+        "weighted avg": {
+            "precision": 0.8861139577610609,
+            "recall": 0.882,
+            "f1-score": 0.879449209842683,
+            "support": 500.0
+        }
+    }
+}
