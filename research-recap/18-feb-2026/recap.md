@@ -33,9 +33,9 @@ Dikembangkan pipeline baru untuk mendapatkan **TRUE INT8 quantization**:
 <img width="1600" height="682" alt="image" src="https://github.com/user-attachments/assets/5c4c29c6-3613-478e-af4f-236a538cf492" />
 
 **Findings GPU:**
-- ✅ Model size compression: 475 MB → 119.53 MB (-74.82%, **4x compression achieved!**)
-- ✅ Accuracy maintained: FP32 87.60% → INT8 86.40% (only -1.20% drop)
-- ❌ **Latency SLOWER**: FP32 3.89 ms → INT8 19.92 ms (+411.79%)
+- Model size compression: 475 MB → 119.53 MB (-74.82%, **4x compression achieved!**)
+- Accuracy maintained: FP32 87.60% → INT8 86.40% (only -1.20% drop)
+- **Latency SLOWER**: FP32 3.89 ms → INT8 19.92 ms (+411.79%)
   - **Kenapa lambat?** GPU tidak bisa langsung memproses INT8 untuk model transformer
   - Data harus **bolak-balik antara CPU dan GPU** (186 kali vs FP32 hanya 12 kali)
   - Kesimpulan: INT8 di GPU malah **lebih lambat 5x** karena overhead perpindahan data
@@ -45,19 +45,19 @@ Dikembangkan pipeline baru untuk mendapatkan **TRUE INT8 quantization**:
 <img width="1600" height="682" alt="image" src="https://github.com/user-attachments/assets/fed58ff3-9027-4bac-bbed-5da976511fa0" />
 
 **Findings CPU:**
-- ✅ Model size compression: 475 MB → 119.53 MB (-74.82%, **4x compression**)
-- ✅ Accuracy maintained: FP32 87.60% → INT8 86.40% (-1.20%)
-- ✅ **Latency FASTER**: FP32 74.32 ms → INT8 31.37 ms (-57.80%, **2.37x speedup!**)
-- ✅ More stable inference: Std latency 0.04 ms (lowest)
+- Model size compression: 475 MB → 119.53 MB (-74.82%, **4x compression**)
+- Accuracy maintained: FP32 87.60% → INT8 86.40% (-1.20%)
+- **Latency FASTER**: FP32 74.32 ms → INT8 31.37 ms (-57.80%, **2.37x speedup!**)
+- More stable inference: Std latency 0.04 ms (lowest)
 
 ### Problems & Limitations
 
-1. **FP16 ONNX Compatibility Issues ❌**
+1. **FP16 ONNX Compatibility Issues**
    - FP16 conversion menghasilkan type mismatch errors: `tensor(float16)` vs `tensor(float)`
    - ONNX Runtime tidak fully support FP16 untuk transformer models
    - Solution: Skip FP16, langsung ke INT8 atau gunakan FP32
 
-2. **INT8 on GPU Performance ❌**
+2. **INT8 on GPU Performance**
    - INT8 ONNX 5x lebih lambat di GPU dibanding FP32
    - 186 Memcpy nodes = CPU↔GPU transfer overhead
    - CUDA tidak memiliki native INT8 support untuk transformers
@@ -76,8 +76,8 @@ Dikembangkan pipeline baru untuk mendapatkan **TRUE INT8 quantization**:
 - Problem: Hanya simulasi, tidak ada true quantization
 
 **After (QAT + ONNX INT8 on CPU):**
-- Model size: 119 MB (**4x compression** ✅)
-- Latency: 31.37 ms (**2.37x speedup** ✅)
+- Model size: 119 MB (**4x compression**)
+- Latency: 31.37 ms (**2.37x speedup**)
 - Accuracy: 86.40% (minimal -1.20% drop)
 - Result: **TRUE INT8 quantization** dengan real benefits
 
