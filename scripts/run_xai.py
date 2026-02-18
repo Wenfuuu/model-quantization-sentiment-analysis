@@ -102,8 +102,8 @@ def generate_lime_comparison(all_lime, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for sample_idx in range(len(samples)):
-        max_features = max(len(all_lime[p][sample_idx]["top_features"]) for p in precisions)
-        fig_height = max(8, max_features * 0.4)
+        num_words = len(samples[sample_idx]["text"].split())
+        fig_height = max(8, num_words * 0.4)
         fig, axes = plt.subplots(1, len(precisions), figsize=(6 * len(precisions), fig_height))
         if len(precisions) == 1:
             axes = [axes]
@@ -116,14 +116,24 @@ def generate_lime_comparison(all_lime, samples, precisions, output_dir):
             features = lime_data["top_features"]
 
             if features:
-                words = [f[0] for f in features]
-                weights = [f[1] for f in features]
-                colors = ['#ff4444' if w < 0 else '#4444ff' for w in weights]
+                feature_dict = {f[0]: f[1] for f in features}
+                sentence_words = samples[sample_idx]["text"].split()
+                ordered_words = []
+                ordered_weights = []
+                for word in sentence_words:
+                    ordered_words.append(word)
+                    ordered_weights.append(feature_dict.get(word, 0.0))
+                for f_word, f_weight in features:
+                    if f_word not in ordered_words:
+                        ordered_words.append(f_word)
+                        ordered_weights.append(f_weight)
 
-                y_pos = range(len(words))
-                ax.barh(y_pos, weights, color=colors)
+                colors = ['#ff4444' if w < 0 else '#4444ff' for w in ordered_weights]
+
+                y_pos = range(len(ordered_words))
+                ax.barh(y_pos, ordered_weights, color=colors)
                 ax.set_yticks(y_pos)
-                ax.set_yticklabels(words, fontsize=9)
+                ax.set_yticklabels(ordered_words, fontsize=9)
                 ax.invert_yaxis()
                 ax.axvline(x=0, color='black', linewidth=0.5)
 
@@ -141,8 +151,8 @@ def generate_shap_comparison(all_shap, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for sample_idx in range(len(samples)):
-        max_tokens = max(len(all_shap[p][sample_idx]["token_importance"]) for p in precisions)
-        fig_height = max(8, max_tokens * 0.4)
+        num_words = len(samples[sample_idx]["text"].split())
+        fig_height = max(8, num_words * 0.4)
         fig, axes = plt.subplots(1, len(precisions), figsize=(6 * len(precisions), fig_height))
         if len(precisions) == 1:
             axes = [axes]
@@ -155,14 +165,24 @@ def generate_shap_comparison(all_shap, samples, precisions, output_dir):
             token_imp = shap_data["token_importance"]
 
             if token_imp:
-                tokens = [t[0] for t in token_imp]
-                values = [t[1] for t in token_imp]
-                colors = ['#ff4444' if v < 0 else '#4444ff' for v in values]
+                token_dict = {t[0]: t[1] for t in token_imp}
+                sentence_words = samples[sample_idx]["text"].split()
+                ordered_tokens = []
+                ordered_values = []
+                for word in sentence_words:
+                    ordered_tokens.append(word)
+                    ordered_values.append(token_dict.get(word, 0.0))
+                for t_word, t_val in token_imp:
+                    if t_word not in ordered_tokens:
+                        ordered_tokens.append(t_word)
+                        ordered_values.append(t_val)
 
-                y_pos = range(len(tokens))
-                ax.barh(y_pos, values, color=colors)
+                colors = ['#ff4444' if v < 0 else '#4444ff' for v in ordered_values]
+
+                y_pos = range(len(ordered_tokens))
+                ax.barh(y_pos, ordered_values, color=colors)
                 ax.set_yticks(y_pos)
-                ax.set_yticklabels(tokens, fontsize=9)
+                ax.set_yticklabels(ordered_tokens, fontsize=9)
                 ax.invert_yaxis()
                 ax.axvline(x=0, color='black', linewidth=0.5)
 
