@@ -36,6 +36,23 @@ ENV/
 env.bak/
 venv.bak/
 
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+*.pth
+*.pt
+*.bin
+*.onnx
+*.safetensors
+model_output/
+models/
+checkpoints/
+
+*.parquet
+*.pkl
+*.pickle
+data/
+
 .vscode/
 .idea/
 *.swp
