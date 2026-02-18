@@ -1,0 +1,2 @@
+class QATTrainer:
+    pass

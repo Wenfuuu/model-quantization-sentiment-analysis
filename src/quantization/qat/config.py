@@ -1,0 +1,2 @@
+class QATConfig:
+    pass
