@@ -1,0 +1,41 @@
+{
+    "test_configuration": {
+        "hardware": "CPU Only",
+        "sample_total": 500,
+        "warmup_runs": 5,
+        "inference_runs": 20,
+        "cpu_threads": 4
+    },
+    "model_sizes_mb": {
+        "fp32_pytorch": 474.79,
+        "fp32_onnx": 475.01,
+        "int8_onnx": 119.53
+    },
+    "fp32_pytorch_cpu": {
+        "accuracy": 87.6,
+        "mean_latency_ms": 74.32,
+        "speedup": 1.0
+    },
+    "fp32_onnx_cpu": {
+        "accuracy": 88.2,
+        "mean_latency_ms": 54.33,
+        "speedup": 1.37
+    },
+    "int8_onnx_cpu": {
+        "accuracy": 86.4,
+        "mean_latency_ms": 31.37,
+        "speedup": 2.37
+    },
+    "comparisons_vs_fp32_pytorch": {
+        "fp32_onnx": {
+            "size_diff_pct": 0.05,
+            "accuracy_diff": 0.6,
+            "latency_diff_pct": -26.9
+        },
+        "int8_onnx": {
+            "size_diff_pct": -74.82,
+            "accuracy_diff": -1.2,
+            "latency_diff_pct": -57.8
+        }
+    }
+}

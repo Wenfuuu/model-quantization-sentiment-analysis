@@ -1,0 +1,77 @@
+{
+    "test_configuration": {
+        "sample_total": 500,
+        "warmup_runs": 5,
+        "inference_runs": 20,
+        "fp16_model_type": "FP32",
+        "fp16_fallback_used": true,
+        "hardware_used": {
+            "fp32_device": "CUDA",
+            "fp16_provider": "CUDAExecutionProvider",
+            "int8_provider": "CUDAExecutionProvider"
+        }
+    },
+    "model_info": {
+        "fp32": {
+            "type": "PyTorch",
+            "path": "./models/indobert-fp32-smsa-3label-finetuned",
+            "size_mb": 474.79
+        },
+        "fp16": {
+            "type": "FP32 ONNX",
+            "path": "./models/indobert-qat-fp16-smsa/model_qat.onnx",
+            "size_mb": 475.01
+        },
+        "int8": {
+            "type": "INT8 ONNX",
+            "path": "./models/indobert-qat-int8-smsa/model_qat_int8.onnx",
+            "size_mb": 119.53
+        }
+    },
+    "fp32_pytorch": {
+        "accuracy": 87.6,
+        "precision": 87.88,
+        "recall": 87.6,
+        "f1": 87.35,
+        "avg_confidence": 98.01,
+        "mean_latency_ms": 3.89,
+        "median_latency_ms": 3.89,
+        "std_latency_ms": 0.02
+    },
+    "fp32_onnx": {
+        "accuracy": 88.2,
+        "precision": 88.61,
+        "recall": 88.2,
+        "f1": 87.94,
+        "avg_confidence": 95.25,
+        "mean_latency_ms": 2.66,
+        "median_latency_ms": 2.65,
+        "std_latency_ms": 0.01
+    },
+    "int8_onnx": {
+        "accuracy": 86.4,
+        "precision": 87.01,
+        "recall": 86.4,
+        "f1": 86.09,
+        "avg_confidence": 97.44,
+        "mean_latency_ms": 19.92,
+        "median_latency_ms": 21.31,
+        "std_latency_ms": 1.81
+    },
+    "comparisons": {
+        "fp32_vs_fp32": {
+            "size_diff_pct": 0.05,
+            "accuracy_diff": 0.6,
+            "confidence_diff": -2.75,
+            "mean_latency_diff_pct": -31.79,
+            "median_latency_diff_pct": -31.97
+        },
+        "int8_vs_fp32": {
+            "size_diff_pct": -74.82,
+            "accuracy_diff": -1.2,
+            "confidence_diff": -0.57,
+            "mean_latency_diff_pct": 411.79,
+            "median_latency_diff_pct": 447.02
+        }
+    }
+}
