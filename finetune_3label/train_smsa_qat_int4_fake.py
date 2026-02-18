@@ -1,8 +1,9 @@
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer, BitsAndBytesConfig
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, classification_report
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from collections import Counter
+from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
 
 import matplotlib
 matplotlib.use("Agg")
@@ -14,6 +15,15 @@ import torch
 import os
 import re
 import json
+
+# Check if bitsandbytes is available
+try:
+    import bitsandbytes as bnb
+    print(f"bitsandbytes version: {bnb.__version__}")
+except ImportError:
+    print("ERROR: bitsandbytes not installed. Please install it:")
+    print("pip install bitsandbytes")
+    exit(1)
 
 tokenizer = AutoTokenizer.from_pretrained("indobenchmark/indobert-base-p2")
 print(f"Tokenizer loaded: {tokenizer.__class__.__name__}")
@@ -77,18 +87,60 @@ dataset = dataset.map(
 print("\nAfter mapping, sample label:", dataset['train'][0]['label'])
 print(f"Label type: {type(dataset['train'][0]['label'])}")
 
-model_fp16 = AutoModelForSequenceClassification.from_pretrained(
+# Configure 4-bit quantization
+quantization_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",  # normalized float 4-bit
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,  # nested quantization for better memory efficiency
+)
+
+# Check device availability
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+print("4-bit quantization configuration:")
+print(f"  Quantization type: NF4 (Normalized Float 4-bit)")
+print(f"  Compute dtype: FP16")
+print(f"  Double quantization: Enabled")
+
+model_int4 = AutoModelForSequenceClassification.from_pretrained(
     "indobenchmark/indobert-base-p2",
     num_labels=3,
     id2label=id2label,
     label2id=label2id,
+    quantization_config=quantization_config,
+    torch_dtype=torch.float16,
+    low_cpu_mem_usage=True,
 )
 
-print(f"FP16 Model loaded: {model_fp16.__class__.__name__}")
-print(f"Number of parameters: {model_fp16.num_parameters():,}")
-print(f"Number of labels: {model_fp16.config.num_labels}")
-print(f"Label mapping: {model_fp16.config.label2id}")
-print(f"\nModel will use mixed precision training (FP16)")
+print(f"\nINT4 Model loaded: {model_int4.__class__.__name__}")
+print(f"Number of parameters: {model_int4.num_parameters():,}")
+print(f"Number of labels: {model_int4.config.num_labels}")
+print(f"Label mapping: {model_int4.config.label2id}")
+print(f"Model quantized to 4-bit using bitsandbytes")
+
+# Enable gradient checkpointing to save memory
+model_int4.gradient_checkpointing_enable()
+model_int4.config.use_cache = False
+
+# Prepare model for k-bit training
+model_int4 = prepare_model_for_kbit_training(model_int4)
+
+# Configure LoRA for parameter-efficient fine-tuning
+lora_config = LoraConfig(
+    r=16,  # LoRA attention dimension
+    lora_alpha=32,  # LoRA scaling parameter
+    target_modules=["query", "key", "value"],  # Apply LoRA to attention layers
+    lora_dropout=0.1,
+    bias="none",
+    task_type="SEQ_CLS"  # Sequence classification task
+)
+
+model_int4 = get_peft_model(model_int4, lora_config)
+
+print(f"Model prepared for 4-bit training with LoRA")
+model_int4.print_trainable_parameters()
 
 stopword_factory = StopWordRemoverFactory()
 indonesian_stopwords = stopword_factory.get_stop_words()
@@ -168,14 +220,14 @@ def compute_metrics(eval_pred):
         'f1': f1
     }
 
-output_dir = "./results/indobert-smsa-qat-fp16-fake"
+output_dir = "./results/indobert-smsa-qat-int4-fake"
 os.makedirs(output_dir, exist_ok=True)
 
 training_args = TrainingArguments(
     output_dir=output_dir,
-    learning_rate=2e-5,
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=16,
+    learning_rate=2e-4,  # Slightly higher LR for quantized training
+    per_device_train_batch_size=8,  # Smaller batch size due to memory constraints
+    per_device_eval_batch_size=8,
     num_train_epochs=3,
     weight_decay=0.01,
     evaluation_strategy="epoch",
@@ -185,19 +237,22 @@ training_args = TrainingArguments(
     logging_dir=f"{output_dir}/logs",
     logging_steps=100,
     report_to="none",
-    fp16=True,  # Enable mixed precision training
+    fp16=True,  # Use FP16 for compute
+    gradient_checkpointing=True,
+    optim="paged_adamw_8bit",  # 8-bit optimizer for memory efficiency
     push_to_hub=False
 )
 
-print("FP16 Training arguments configured:")
+print("INT4 Training arguments configured:")
 print(f"  Output directory: {output_dir}")
 print(f"  Learning rate: {training_args.learning_rate}")
 print(f"  Batch size: {training_args.per_device_train_batch_size}")
 print(f"  Epochs: {training_args.num_train_epochs}")
-print(f"  Precision: FP16 (Mixed Precision)")
+print(f"  Quantization: INT4 (4-bit NF4)")
+print(f"  Optimizer: 8-bit AdamW")
 
 trainer = Trainer(
-    model=model_fp16,
+    model=model_int4,
     args=training_args,
     train_dataset=tokenized_dataset['train'],
     eval_dataset=tokenized_dataset['validation'],
@@ -205,25 +260,27 @@ trainer = Trainer(
     tokenizer=tokenizer
 )
 
-print("FP16 Trainer initialized successfully!")
+print("INT4 Trainer initialized successfully!")
 
-print("Starting FP16 training...")
-print("Note: FP16 training is typically faster and uses less memory than FP32")
+print("Starting INT4 training...")
+print("Note: 4-bit training uses significantly less memory but may be slower")
 print("="*70)
 
 train_result = trainer.train()
 
 print("\n" + "="*70)
-print("FP16 Training completed!")
+print("INT4 Training completed!")
 print(f"Training loss: {train_result.training_loss:.4f}")
 print(f"Training runtime: {train_result.metrics['train_runtime']:.2f} seconds")
 print(f"Training samples/second: {train_result.metrics['train_samples_per_second']:.2f}")
 
-model_save_path = "./models/indobert-smsa-qat-fp16-fake"
+# Save the final model
+model_save_path = "./models/indobert-smsa-qat-int4-fake"
 os.makedirs(model_save_path, exist_ok=True)
 
-print(f"\nSaving FP16 model to {model_save_path}...")
+print(f"\nSaving INT4 model to {model_save_path}...")
 trainer.save_model(model_save_path)
 tokenizer.save_pretrained(model_save_path)
 
 print("Model and tokenizer saved successfully!")
+print("\nNote: This model is quantized and requires bitsandbytes for inference")

@@ -1,8 +1,10 @@
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, classification_report
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from collections import Counter
+from torch.ao.quantization import QConfig
+from torch.ao.quantization.observer import MovingAverageMinMaxObserver, MinMaxObserver
 
 import matplotlib
 matplotlib.use("Agg")
@@ -11,18 +13,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
+import torch.quantization as quantization
 import os
 import re
 import json
-
-# Check if bitsandbytes is available
-try:
-    import bitsandbytes as bnb
-    print(f"bitsandbytes version: {bnb.__version__}")
-except ImportError:
-    print("ERROR: bitsandbytes not installed. Please install it:")
-    print("pip install bitsandbytes")
-    exit(1)
 
 tokenizer = AutoTokenizer.from_pretrained("indobenchmark/indobert-base-p2")
 print(f"Tokenizer loaded: {tokenizer.__class__.__name__}")
@@ -86,42 +80,32 @@ dataset = dataset.map(
 print("\nAfter mapping, sample label:", dataset['train'][0]['label'])
 print(f"Label type: {type(dataset['train'][0]['label'])}")
 
-# Configure 4-bit quantization
-quantization_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",  # normalized float 4-bit
-    bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_use_double_quant=True,  # nested quantization for better memory efficiency
-)
-
-print("4-bit quantization configuration:")
-print(f"  Quantization type: NF4 (Normalized Float 4-bit)")
-print(f"  Compute dtype: FP16")
-print(f"  Double quantization: Enabled")
-
-model_int4 = AutoModelForSequenceClassification.from_pretrained(
+model_fp32 = AutoModelForSequenceClassification.from_pretrained(
     "indobenchmark/indobert-base-p2",
     num_labels=3,
     id2label=id2label,
     label2id=label2id,
-    quantization_config=quantization_config,
 )
 
-print(f"\nINT4 Model loaded: {model_int4.__class__.__name__}")
-print(f"Number of parameters: {model_int4.num_parameters():,}")
-print(f"Number of labels: {model_int4.config.num_labels}")
-print(f"Label mapping: {model_int4.config.label2id}")
-print(f"Model quantized to 4-bit using bitsandbytes")
+print(f"FP32 Model loaded: {model_fp32.__class__.__name__}")
+print(f"Number of parameters: {model_fp32.num_parameters():,}")
+print(f"Number of labels: {model_fp32.config.num_labels}")
+print(f"Label mapping: {model_fp32.config.label2id}")
 
-# Enable gradient checkpointing to save memory
-model_int4.gradient_checkpointing_enable()
-model_int4.config.use_cache = False
+# switch model to training from eval mode to apply QAT
+model_fp32.train()
 
-# Prepare model for k-bit training
-from peft import prepare_model_for_kbit_training
-model_int4 = prepare_model_for_kbit_training(model_int4)
+model_fp32.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
 
-print(f"Model prepared for 4-bit training")
+if hasattr(model_fp32, "bert") and hasattr(model_fp32.bert, "embeddings"):
+    model_fp32.bert.embeddings.qconfig = None
+    print("Embedding Layer excluded from Quantization (Safe Mode)")
+
+model_qat = quantization.prepare_qat(model_fp32, inplace=True)
+
+print(f"\nModel prepared for QAT")
+print(f"Fake quantization modules inserted")
+print(f"Model will simulate INT8 quantization during training")
 
 stopword_factory = StopWordRemoverFactory()
 indonesian_stopwords = stopword_factory.get_stop_words()
@@ -201,14 +185,14 @@ def compute_metrics(eval_pred):
         'f1': f1
     }
 
-output_dir = "./results/indobert-smsa-qat-int4-fake"
+output_dir = "./results/indobert-smsa-qat-int8"
 os.makedirs(output_dir, exist_ok=True)
 
 training_args = TrainingArguments(
     output_dir=output_dir,
-    learning_rate=2e-4,  # Slightly higher LR for quantized training
-    per_device_train_batch_size=8,  # Smaller batch size due to memory constraints
-    per_device_eval_batch_size=8,
+    learning_rate=2e-5,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
     num_train_epochs=3,
     weight_decay=0.01,
     evaluation_strategy="epoch",
@@ -218,22 +202,19 @@ training_args = TrainingArguments(
     logging_dir=f"{output_dir}/logs",
     logging_steps=100,
     report_to="none",
-    fp16=True,  # Use FP16 for compute
-    gradient_checkpointing=True,
-    optim="paged_adamw_8bit",  # 8-bit optimizer for memory efficiency
+    fp16=False,
     push_to_hub=False
 )
 
-print("INT4 Training arguments configured:")
+print("QAT Training arguments configured:")
 print(f"  Output directory: {output_dir}")
 print(f"  Learning rate: {training_args.learning_rate}")
 print(f"  Batch size: {training_args.per_device_train_batch_size}")
 print(f"  Epochs: {training_args.num_train_epochs}")
-print(f"  Quantization: INT4 (4-bit NF4)")
-print(f"  Optimizer: 8-bit AdamW")
+print(f"  Quantization: INT8 (fake quant during training)")
 
 trainer = Trainer(
-    model=model_int4,
+    model=model_qat,
     args=training_args,
     train_dataset=tokenized_dataset['train'],
     eval_dataset=tokenized_dataset['validation'],
@@ -241,27 +222,27 @@ trainer = Trainer(
     tokenizer=tokenizer
 )
 
-print("INT4 Trainer initialized successfully!")
+print("QAT Trainer initialized successfully!")
 
-print("Starting INT4 training...")
-print("Note: 4-bit training uses significantly less memory but may be slower")
+print("Starting QAT training...")
+print("Note: Training with fake quantization may be 10-20% slower than FP32")
 print("="*70)
 
 train_result = trainer.train()
 
 print("\n" + "="*70)
-print("INT4 Training completed!")
+print("QAT Training completed!")
 print(f"Training loss: {train_result.training_loss:.4f}")
 print(f"Training runtime: {train_result.metrics['train_runtime']:.2f} seconds")
 print(f"Training samples/second: {train_result.metrics['train_samples_per_second']:.2f}")
 
-# Save the final model
-model_save_path = "./models/indobert-smsa-qat-int4-fake"
-os.makedirs(model_save_path, exist_ok=True)
+print("--- CONVERTING TO INT8 ---")
+model_qat.to("cpu")
+model_qat.eval()
 
-print(f"\nSaving INT4 model to {model_save_path}...")
-trainer.save_model(model_save_path)
-tokenizer.save_pretrained(model_save_path)
+torch.quantization.convert(model_qat, inplace=True)
 
-print("Model and tokenizer saved successfully!")
-print("\nNote: This model is quantized and requires bitsandbytes for inference")
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+torch.save(model_qat.state_dict(), os.path.join(output_dir, "model_qat_int8.pth"))
+print(f"QAT Model saved to {output_dir}")

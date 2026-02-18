@@ -40,7 +40,7 @@ quantization_config = BitsAndBytesConfig(
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = AutoModelForSequenceClassification.from_pretrained(
     MODEL_PATH,
-    quantization_config=quantization_config,
+    quantization_config=quantization_config
 )
 
 print(f"INT4 Model loaded from: {MODEL_PATH}")
