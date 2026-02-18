@@ -1,5 +1,6 @@
 import sys
 import torch
+import json
 import warnings
 from pathlib import Path
 
@@ -151,6 +152,58 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     print(f"\nFP16 vs FP32 Consistency: {consistency['fp16']*100:.1f}%")
     print(f"INT8 vs FP32 Consistency: {consistency['int8']*100:.1f}%")
     print(f"INT4 vs FP32 Consistency: {consistency['int4']*100:.1f}%")
+    
+    print_section("PREDICTION DIVERGENCES")
+    
+    divergences = []
+    precisions_list = ["fp32", "fp16", "int8", "int4"]
+    all_preds = {
+        "fp32": fp32_results["predictions"],
+        "fp16": fp16_results["predictions"],
+        "int8": int8_results["predictions"],
+        "int4": int4_results["predictions"]
+    }
+    
+    for i in range(len(test_samples)):
+        preds_by_precision = {}
+        for p in precisions_list:
+            preds_by_precision[p] = {
+                "label": all_preds[p][i]["predicted"],
+                "confidence": float(all_preds[p][i]["confidence"])
+            }
+        
+        labels_set = set(preds_by_precision[p]["label"] for p in precisions_list)
+        if len(labels_set) > 1:
+            divergences.append({
+                "sample_idx": i,
+                "text": test_samples[i]["text"],
+                "expected": test_samples[i]["expected"],
+                "predictions": preds_by_precision
+            })
+    
+    divergence_data = {
+        "experiment": version_key,
+        "total_samples": len(test_samples),
+        "num_divergences": len(divergences),
+        "divergences": divergences
+    }
+    
+    divergence_path = output_dir / "prediction_divergences.json"
+    with open(divergence_path, "w", encoding="utf-8") as f:
+        json.dump(divergence_data, f, ensure_ascii=False, indent=2)
+    
+    print(f"Found {len(divergences)} divergent samples (out of {len(test_samples)} total)")
+    print(f"Saved to: {divergence_path}")
+    
+    if divergences:
+        for d in divergences[:10]:
+            preds_str = "  ".join(f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.1f}%)" for p in precisions_list)
+            print(f"\n  Sample #{d['sample_idx']+1}: Expected={d['expected']}")
+            print(f"    {preds_str}")
+        if len(divergences) > 10:
+            print(f"\n  ... and {len(divergences) - 10} more divergent samples")
+    else:
+        print("  All models agree on all predictions!")
     
     print_section("STATISTICAL ANALYSIS")
     

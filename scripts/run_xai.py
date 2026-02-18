@@ -1,5 +1,6 @@
 import sys
 import torch
+import json
 import warnings
 import numpy as np
 import matplotlib
@@ -39,6 +40,22 @@ def select_samples(dataset_samples, num_samples=3):
     return selected[:num_samples]
 
 
+def load_divergences(experiment_key):
+    config = EXPERIMENT_CONFIGS[experiment_key]
+    output_dir = Path(config["output_dir"])
+    divergence_path = output_dir / "prediction_divergences.json"
+    
+    if not divergence_path.exists():
+        print(f"\n  Divergence file not found: {divergence_path}")
+        print("  Please run PTQ experiment first to generate divergence data.")
+        return None
+    
+    with open(divergence_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    return data
+
+
 def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
     lime_explainer = LIMEExplainer(base_model, LABELS, use_fp16=use_fp16)
     shap_explainer = SHAPExplainer(base_model, LABELS, use_fp16=use_fp16)
@@ -49,7 +66,7 @@ def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
     print(f"\n  Running LIME for {precision_name.upper()}...")
     for i, sample in enumerate(samples):
         print(f"    Sample {i+1}/{len(samples)}")
-        explanation = lime_explainer.explain(sample["text"], num_features=10, num_samples=300)
+        explanation = lime_explainer.explain(sample["text"], num_features=30, num_samples=300)
         predicted_idx = int(np.argmax(explanation.predict_proba))
         label_names = [LABELS[j] for j in sorted(LABELS.keys())]
         features = explanation.as_list(label=predicted_idx)
@@ -71,7 +88,7 @@ def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
             for j, token in enumerate(data):
                 if isinstance(token, str) and token.strip():
                     token_importance[token] = float(values[j][predicted_class])
-        sorted_imp = sorted(token_importance.items(), key=lambda x: abs(x[1]), reverse=True)[:10]
+        sorted_imp = sorted(token_importance.items(), key=lambda x: abs(x[1]), reverse=True)
         label_names = [LABELS[j] for j in sorted(LABELS.keys())]
         shap_results.append({
             "predicted_label": label_names[predicted_class],
@@ -85,7 +102,9 @@ def generate_lime_comparison(all_lime, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for sample_idx in range(len(samples)):
-        fig, axes = plt.subplots(1, len(precisions), figsize=(6 * len(precisions), 8))
+        max_features = max(len(all_lime[p][sample_idx]["top_features"]) for p in precisions)
+        fig_height = max(8, max_features * 0.4)
+        fig, axes = plt.subplots(1, len(precisions), figsize=(6 * len(precisions), fig_height))
         if len(precisions) == 1:
             axes = [axes]
 
@@ -94,7 +113,7 @@ def generate_lime_comparison(all_lime, samples, precisions, output_dir):
         for col, precision in enumerate(precisions):
             ax = axes[col]
             lime_data = all_lime[precision][sample_idx]
-            features = lime_data["top_features"][:10]
+            features = lime_data["top_features"]
 
             if features:
                 words = [f[0] for f in features]
@@ -122,7 +141,9 @@ def generate_shap_comparison(all_shap, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for sample_idx in range(len(samples)):
-        fig, axes = plt.subplots(1, len(precisions), figsize=(6 * len(precisions), 8))
+        max_tokens = max(len(all_shap[p][sample_idx]["token_importance"]) for p in precisions)
+        fig_height = max(8, max_tokens * 0.4)
+        fig, axes = plt.subplots(1, len(precisions), figsize=(6 * len(precisions), fig_height))
         if len(precisions) == 1:
             axes = [axes]
 
@@ -131,7 +152,7 @@ def generate_shap_comparison(all_shap, samples, precisions, output_dir):
         for col, precision in enumerate(precisions):
             ax = axes[col]
             shap_data = all_shap[precision][sample_idx]
-            token_imp = shap_data["token_importance"][:10]
+            token_imp = shap_data["token_importance"]
 
             if token_imp:
                 tokens = [t[0] for t in token_imp]
@@ -215,9 +236,8 @@ def interactive_menu():
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
     print("  [2] Finetuned IndoBERT (indobert-fp32-smsa-3label)")
-    print("  [3] Both")
 
-    model_choice = input("\n  Enter choice (1/2/3): ").strip()
+    model_choice = input("\n  Enter choice (1/2): ").strip()
 
     print("\n  Select Dataset:")
     print("  [1] SMSA (test.tsv)")
@@ -225,46 +245,148 @@ def interactive_menu():
 
     dataset_choice = input("\n  Enter choice (1/2): ").strip()
 
-    print("\n  Select Precision:")
-    print("  [1] FP32 (Original)")
-    print("  [2] FP16 (Half Precision)")
-    print("  [3] INT8 (Dynamic Quantization)")
-    print("  [4] INT4 (4-bit Quantization)")
-    print("  [5] All Precisions")
-
-    precision_choice = input("\n  Enter choice (1/2/3/4/5): ").strip()
-
-    num_samples_str = input("\n  Number of samples to explain (default 3): ").strip()
-    num_samples = int(num_samples_str) if num_samples_str else 3
-
-    models = []
-    if model_choice == "1":
-        models = ["original"]
-    elif model_choice == "2":
-        models = ["finetuned"]
-    else:
-        models = ["original", "finetuned"]
-
+    model = "original" if model_choice == "1" else "finetuned"
     dataset = "smsa" if dataset_choice == "1" else "tweets"
+    experiment_key = f"{model}_{dataset}"
 
-    precisions = []
-    if precision_choice == "1":
-        precisions = ["fp32"]
-    elif precision_choice == "2":
-        precisions = ["fp16"]
-    elif precision_choice == "3":
-        precisions = ["int8"]
-    elif precision_choice == "4":
-        precisions = ["int4"]
-    else:
-        precisions = ["fp32", "fp16", "int8", "int4"]
+    print("\n  Sample Selection Mode:")
+    print("  [1] Auto-select by label diversity")
+    print("  [2] From prediction divergences (requires PTQ run)")
 
-    experiment_keys = [f"{m}_{dataset}" for m in models]
+    sample_mode = input("\n  Enter choice (1/2): ").strip()
 
-    return experiment_keys, precisions, num_samples
+    divergence_samples = None
+    precisions = None
+
+    if sample_mode == "2":
+        div_data = load_divergences(experiment_key)
+        if div_data is None:
+            sys.exit(1)
+
+        divergences = div_data["divergences"]
+        if not divergences:
+            print("\n  No divergences found - all models agree!")
+            print("  Switching to auto-select mode.")
+            sample_mode = "1"
+        else:
+            print(f"\n  Found {len(divergences)} divergent samples (out of {div_data['total_samples']} total)")
+
+            print("\n  Compare models:")
+            print("  [1] All precisions (all divergences)")
+            print("  [2] FP32 vs FP16")
+            print("  [3] FP32 vs INT8")
+            print("  [4] FP32 vs INT4")
+            print("  [5] INT8 vs INT4")
+            print("  [6] Specific model vs all others")
+            print("  [7] Custom precisions")
+
+            compare_choice = input("\n  Enter choice (1-7): ").strip()
+
+            pair_filter = None
+            if compare_choice == "2":
+                pair_filter = ["fp32", "fp16"]
+                precisions = ["fp32", "fp16"]
+            elif compare_choice == "3":
+                pair_filter = ["fp32", "int8"]
+                precisions = ["fp32", "int8"]
+            elif compare_choice == "4":
+                pair_filter = ["fp32", "int4"]
+                precisions = ["fp32", "int4"]
+            elif compare_choice == "5":
+                pair_filter = ["int8", "int4"]
+                precisions = ["int8", "int4"]
+            elif compare_choice == "6":
+                print("\n  Which model to compare against all others?")
+                print("  [1] FP32  [2] FP16  [3] INT8  [4] INT4")
+                m_choice = input("  Enter choice: ").strip()
+                model_map = {"1": "fp32", "2": "fp16", "3": "int8", "4": "int4"}
+                target_model = model_map.get(m_choice, "int8")
+                pair_filter = [target_model, "all"]
+                precisions = ["fp32", "fp16", "int8", "int4"]
+            elif compare_choice == "7":
+                custom = input("\n  Enter precisions comma-separated (e.g., fp32,int8,int4): ").strip()
+                precisions = [p.strip().lower() for p in custom.split(",")]
+                if len(precisions) == 2:
+                    pair_filter = precisions[:]
+            else:
+                pair_filter = None
+                precisions = ["fp32", "fp16", "int8", "int4"]
+
+            if pair_filter:
+                if pair_filter[1] == "all":
+                    target = pair_filter[0]
+                    filtered = []
+                    for d in divergences:
+                        preds = d["predictions"]
+                        target_label = preds[target]["label"]
+                        if any(preds[p]["label"] != target_label for p in preds if p != target):
+                            filtered.append(d)
+                else:
+                    filtered = []
+                    for d in divergences:
+                        preds = d["predictions"]
+                        if preds[pair_filter[0]]["label"] != preds[pair_filter[1]]["label"]:
+                            filtered.append(d)
+            else:
+                filtered = divergences
+
+            if not filtered:
+                print(f"\n  No divergences found for the selected comparison.")
+                print("  Switching to auto-select mode.")
+                sample_mode = "1"
+            else:
+                all_precs = ["fp32", "fp16", "int8", "int4"]
+                print(f"\n  {len(filtered)} divergent samples found:")
+                for idx, d in enumerate(filtered, 1):
+                    preds_str = "  ".join(f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.1f}%)" for p in all_precs)
+                    print(f"\n  [{idx}] Sample #{d['sample_idx']+1}: Expected={d['expected']}")
+                    print(f"      {preds_str}")
+                    print(f"      \"{d['text']}\"")
+
+                select_str = input(f"\n  Select samples: [A]ll or enter numbers (e.g., 1,3,5): ").strip()
+
+                if select_str.upper() == "A" or select_str == "":
+                    selected_divs = filtered
+                else:
+                    indices = [int(x.strip()) - 1 for x in select_str.split(",")]
+                    selected_divs = [filtered[i] for i in indices if 0 <= i < len(filtered)]
+
+                divergence_samples = [{"text": d["text"], "expected": d["expected"]} for d in selected_divs]
+                num_samples = len(divergence_samples)
+
+                print(f"\n  Selected {num_samples} divergent samples for XAI analysis")
+                print(f"  Precisions: {', '.join(p.upper() for p in precisions)}")
+
+                return experiment_key, precisions, num_samples, divergence_samples
+
+    if sample_mode != "2":
+        print("\n  Select Precision:")
+        print("  [1] FP32 (Original)")
+        print("  [2] FP16 (Half Precision)")
+        print("  [3] INT8 (Dynamic Quantization)")
+        print("  [4] INT4 (4-bit Quantization)")
+        print("  [5] All Precisions")
+
+        precision_choice = input("\n  Enter choice (1/2/3/4/5): ").strip()
+
+        num_samples_str = input("\n  Number of samples to explain (default 3): ").strip()
+        num_samples = int(num_samples_str) if num_samples_str else 3
+
+        if precision_choice == "1":
+            precisions = ["fp32"]
+        elif precision_choice == "2":
+            precisions = ["fp16"]
+        elif precision_choice == "3":
+            precisions = ["int8"]
+        elif precision_choice == "4":
+            precisions = ["int4"]
+        else:
+            precisions = ["fp32", "fp16", "int8", "int4"]
+
+    return experiment_key, precisions, num_samples, None
 
 
-def run_xai_experiment(version_key, precisions, num_samples):
+def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=None):
     config = EXPERIMENT_CONFIGS[version_key]
     output_dir = Path(config["output_dir"])
     comparison_dir = output_dir / "xai" / "comparison"
@@ -273,15 +395,19 @@ def run_xai_experiment(version_key, precisions, num_samples):
     print(f"Model: {config['model_id']}")
     print(f"Dataset: {config['dataset']}")
     print(f"Precisions: {', '.join(precisions)}")
-    print(f"Num samples: {num_samples}")
 
-    if config["dataset"] == "smsa":
-        all_samples = load_smsa_dataset()
+    if divergence_samples:
+        samples = divergence_samples
+        print(f"Mode: Divergence analysis ({len(samples)} divergent samples)")
     else:
-        all_samples = load_tweets_dataset()
+        if config["dataset"] == "smsa":
+            all_samples = load_smsa_dataset()
+        else:
+            all_samples = load_tweets_dataset()
+        samples = select_samples(all_samples, num_samples)
+        print(f"Mode: Auto-select ({num_samples} samples)")
 
-    samples = select_samples(all_samples, num_samples)
-    print(f"\nSelected {len(samples)} representative samples:")
+    print(f"\nSelected {len(samples)} samples for XAI analysis:")
     for i, s in enumerate(samples, 1):
         print(f"  {i}. [{s['expected']}] \"{s['text']}\"")
 
@@ -339,20 +465,21 @@ def run_xai_experiment(version_key, precisions, num_samples):
 
 
 if __name__ == "__main__":
-    experiment_keys, precisions, num_samples = interactive_menu()
+    experiment_key, precisions, num_samples, divergence_samples = interactive_menu()
 
     print("\n" + "=" * 80)
-    print(f"STARTING XAI ANALYSIS - {len(experiment_keys)} EXPERIMENT(S)")
+    print(f"STARTING XAI ANALYSIS: {experiment_key}")
     print(f"Precisions: {', '.join(precisions)}")
-    print(f"Samples per precision: {num_samples}")
+    if divergence_samples:
+        print(f"Mode: Divergence analysis ({len(divergence_samples)} samples)")
+    else:
+        print(f"Mode: Auto-select ({num_samples} samples)")
     print("=" * 80)
 
-    for idx, key in enumerate(experiment_keys, 1):
-        print(f"\n[{idx}/{len(experiment_keys)}] {key}")
-        run_xai_experiment(key, precisions, num_samples)
+    run_xai_experiment(experiment_key, precisions, num_samples, divergence_samples)
 
     print_section("XAI ANALYSIS COMPLETED")
-    print("Results saved to: outputs/{experiment}/xai/comparison/")
+    print(f"Results saved to: outputs/{experiment_key}/xai/comparison/")
     print("  - lime_comparison_sample_N.png : LIME feature importance side by side")
     print("  - shap_comparison_sample_N.png : SHAP token importance side by side")
     print("  - prediction_summary.png       : Prediction correctness table")
