@@ -142,8 +142,6 @@ def main(args):
         for w in ["model.safetensors", "pytorch_model.bin"]
     )
     _model_source = str(SAVE_DIR) if _has_weights else MODEL_ID
-    print(f"  Tokenizer source: {_tok_source}")
-    print(f"  Model source:     {_model_source}")
     tokenizer = AutoTokenizer.from_pretrained(_tok_source)
     model = AutoModelForSequenceClassification.from_pretrained(
         _model_source,
@@ -152,7 +150,7 @@ def main(args):
     ).to(DEVICE)
 
     tokenizer.save_pretrained(SAVE_DIR)
-    print(f"  Tokenizer saved to {SAVE_DIR}")
+    print(f"Tokenizer saved to {SAVE_DIR}")
 
     print("\nLoading datasets ...")
     train_set = SMSADataset(DATA_DIR / "train.tsv", tokenizer)
@@ -238,11 +236,6 @@ def main(args):
 
     with open(history_path, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
-
-    print(f"\nAll results saved to {SAVE_DIR}")
-    print("\nNext step:")
-    print("  python scripts/run_attribution_comparison.py --xai-limit 100")
-
 
 def parse_args():
     p = argparse.ArgumentParser()
