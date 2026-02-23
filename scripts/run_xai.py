@@ -15,7 +15,7 @@ from src.data import load_smsa_dataset, load_tweets_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
 from src.models.base import BaseModel
-from src.xai import LIMEExplainer, SHAPExplainer
+from src.xai import LIMEExplainer, SHAPExplainer, IntegratedGradientsExplainer, OcclusionExplainer
 from src.utils import print_section
 
 warnings.filterwarnings('ignore')
@@ -59,9 +59,12 @@ def load_divergences(experiment_key):
 def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
     lime_explainer = LIMEExplainer(base_model, LABELS, use_fp16=use_fp16)
     shap_explainer = SHAPExplainer(base_model, LABELS, use_fp16=use_fp16)
+    occlusion_explainer = OcclusionExplainer(base_model, LABELS, use_fp16=use_fp16)
 
     lime_results = []
     shap_results = []
+    ig_results = []
+    occlusion_results = []
 
     print(f"\n  Running LIME for {precision_name.upper()}...")
     for i, sample in enumerate(samples):
@@ -95,7 +98,25 @@ def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
             "token_importance": sorted_imp
         })
 
-    return lime_results, shap_results
+    print(f"  Running Integrated Gradients for {precision_name.upper()}...")
+    ig_explainer = IntegratedGradientsExplainer(base_model.model, base_model.tokenizer, device=base_model.device)
+    label_names = [LABELS[j] for j in sorted(LABELS.keys())]
+    for i, sample in enumerate(samples):
+        print(f"    Sample {i+1}/{len(samples)}")
+        ig_result = ig_explainer.explain(sample["text"], steps=30)
+        ig_results.append({
+            "predicted_label": label_names[ig_result["predicted_class"]],
+            "tokens": ig_result["tokens"],
+            "scores": ig_result["scores"].tolist() if hasattr(ig_result["scores"], "tolist") else list(ig_result["scores"]),
+        })
+
+    print(f"  Running Occlusion for {precision_name.upper()}...")
+    for i, sample in enumerate(samples):
+        print(f"    Sample {i+1}/{len(samples)}")
+        occ_result = occlusion_explainer.explain(sample["text"], window_size=1)
+        occlusion_results.append(occ_result)
+
+    return lime_results, shap_results, ig_results, occlusion_results
 
 
 def generate_lime_comparison(all_lime, samples, precisions, output_dir):
@@ -191,6 +212,88 @@ def generate_shap_comparison(all_shap, samples, precisions, output_dir):
 
         plt.tight_layout()
         path = output_dir / f"shap_comparison_sample_{sample_idx + 1}.png"
+        plt.savefig(str(path), dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved: {path}")
+
+
+def generate_ig_comparison(all_ig, samples, precisions, output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for sample_idx in range(len(samples)):
+        fig_height = max(8, 20 * 0.4)
+        fig, axes = plt.subplots(1, len(precisions), figsize=(6 * len(precisions), fig_height))
+        if len(precisions) == 1:
+            axes = [axes]
+
+        fig.suptitle(f"Integrated Gradients Comparison - Sample {sample_idx + 1}\n\"{samples[sample_idx]['text']}\"\nExpected: {samples[sample_idx]['expected']}", fontsize=10, fontweight='bold', wrap=True)
+
+        for col, precision in enumerate(precisions):
+            ax = axes[col]
+            ig_data = all_ig[precision][sample_idx]
+            tokens = ig_data["tokens"]
+            scores = ig_data["scores"]
+
+            display_tokens = []
+            display_scores = []
+            for t, s in zip(tokens, scores):
+                if t not in ["[CLS]", "[SEP]", "[PAD]"]:
+                    display_tokens.append(t)
+                    display_scores.append(s)
+
+            if display_tokens:
+                colors = ['#ff4444' if s < 0 else '#4444ff' for s in display_scores]
+                y_pos = range(len(display_tokens))
+                ax.barh(y_pos, display_scores, color=colors)
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(display_tokens, fontsize=9)
+                ax.invert_yaxis()
+                ax.axvline(x=0, color='black', linewidth=0.5)
+
+            ax.set_title(f"{precision.upper()}\nPred: {ig_data['predicted_label']}", fontweight='bold')
+            ax.set_xlabel("IG attribution")
+
+        plt.tight_layout()
+        path = output_dir / f"ig_comparison_sample_{sample_idx + 1}.png"
+        plt.savefig(str(path), dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved: {path}")
+
+
+def generate_occlusion_comparison(all_occ, samples, precisions, output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for sample_idx in range(len(samples)):
+        num_words = len(samples[sample_idx]["text"].split())
+        fig_height = max(8, num_words * 0.4)
+        fig, axes = plt.subplots(1, len(precisions), figsize=(6 * len(precisions), fig_height))
+        if len(precisions) == 1:
+            axes = [axes]
+
+        fig.suptitle(f"Occlusion Comparison - Sample {sample_idx + 1}\n\"{samples[sample_idx]['text']}\"\nExpected: {samples[sample_idx]['expected']}", fontsize=10, fontweight='bold', wrap=True)
+
+        for col, precision in enumerate(precisions):
+            ax = axes[col]
+            occ_data = all_occ[precision][sample_idx]
+            token_imp = occ_data["all_tokens_ordered"]
+
+            if token_imp:
+                tokens_list = [t[0] for t in token_imp]
+                values_list = [t[1] for t in token_imp]
+                colors = ['#ff4444' if v < 0 else '#4444ff' for v in values_list]
+
+                y_pos = range(len(tokens_list))
+                ax.barh(y_pos, values_list, color=colors)
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(tokens_list, fontsize=9)
+                ax.invert_yaxis()
+                ax.axvline(x=0, color='black', linewidth=0.5)
+
+            ax.set_title(f"{precision.upper()}\nPred: {occ_data['predicted_label']}", fontweight='bold')
+            ax.set_xlabel("Confidence drop")
+
+        plt.tight_layout()
+        path = output_dir / f"occlusion_comparison_sample_{sample_idx + 1}.png"
         plt.savefig(str(path), dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: {path}")
@@ -436,41 +539,53 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
 
     all_lime = {}
     all_shap = {}
+    all_ig = {}
+    all_occ = {}
 
     for precision in precisions:
         print_section(f"COLLECTING XAI DATA - {precision.upper()}")
 
         if precision == "fp32":
-            lime_res, shap_res = collect_xai_results(base_model, "fp32", samples)
+            lime_res, shap_res, ig_res, occ_res = collect_xai_results(base_model, "fp32", samples)
 
         elif precision == "fp16":
             ptq = PTQQuantizer(base_model.model)
             model_fp16, fp16_time = ptq.quantize_fp16()
             print(f"  FP16 quantization: {fp16_time:.2f}s")
             fp16_model = BaseModel(model_fp16, base_model.tokenizer)
-            lime_res, shap_res = collect_xai_results(fp16_model, "fp16", samples, use_fp16=True)
+            lime_res, shap_res, ig_res, occ_res = collect_xai_results(fp16_model, "fp16", samples, use_fp16=True)
 
         elif precision == "int8":
             ptq = PTQQuantizer(base_model.model)
             model_int8, int8_time = ptq.quantize_int8()
             print(f"  INT8 quantization: {int8_time:.2f}s")
             int8_model = BaseModel(model_int8, base_model.tokenizer, device=torch.device("cpu"))
-            lime_res, shap_res = collect_xai_results(int8_model, "int8", samples)
+            lime_res, shap_res, ig_res, occ_res = collect_xai_results(int8_model, "int8", samples)
 
         elif precision == "int4":
             ptq = PTQQuantizer(base_model.model)
             model_int4, int4_time = ptq.quantize_int4()
             print(f"  INT4 quantization: {int4_time:.2f}s")
             int4_model = BaseModel(model_int4, base_model.tokenizer)
-            lime_res, shap_res = collect_xai_results(int4_model, "int4", samples)
+            lime_res, shap_res, ig_res, occ_res = collect_xai_results(int4_model, "int4", samples)
 
         all_lime[precision] = lime_res
         all_shap[precision] = shap_res
+        all_ig[precision] = ig_res
+        all_occ[precision] = occ_res
 
-        for i, (lr, sr) in enumerate(zip(lime_res, shap_res)):
+        for i in range(len(samples)):
+            lr = lime_res[i]
+            sr = shap_res[i]
+            ir = ig_res[i]
+            oc = occ_res[i]
             print(f"\n  Sample {i+1}: Pred={lr['predicted_label']} | Expected={samples[i]['expected']}")
             print(f"    LIME top 3: {', '.join(f'{f[0]}({f[1]:+.3f})' for f in lr['top_features'][:3])}")
             print(f"    SHAP top 3: {', '.join(f'{t[0]}({t[1]:+.3f})' for t in sr['token_importance'][:3])}")
+            ig_tokens_scores = [(ir['tokens'][j], ir['scores'][j]) for j in range(len(ir['tokens'])) if ir['tokens'][j] not in ['[CLS]', '[SEP]', '[PAD]']]
+            ig_sorted = sorted(ig_tokens_scores, key=lambda x: abs(x[1]), reverse=True)[:3]
+            print(f"    IG top 3: {', '.join(f'{t}({s:+.3f})' for t, s in ig_sorted)}")
+            print(f"    Occlusion top 3: {', '.join(f'{t[0]}({t[1]:+.3f})' for t in oc['token_importance'][:3])}")
 
     print_section("GENERATING COMPARISON CHARTS")
 
@@ -479,6 +594,12 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
 
     print("\n  SHAP Comparison:")
     generate_shap_comparison(all_shap, samples, precisions, comparison_dir)
+
+    print("\n  Integrated Gradients Comparison:")
+    generate_ig_comparison(all_ig, samples, precisions, comparison_dir)
+
+    print("\n  Occlusion Comparison:")
+    generate_occlusion_comparison(all_occ, samples, precisions, comparison_dir)
 
     print("\n  Prediction Summary:")
     generate_prediction_summary(all_lime, samples, precisions, comparison_dir)
@@ -500,6 +621,8 @@ if __name__ == "__main__":
 
     print_section("XAI ANALYSIS COMPLETED")
     print(f"Results saved to: outputs/{experiment_key}/xai/comparison/")
-    print("  - lime_comparison_sample_N.png : LIME feature importance side by side")
-    print("  - shap_comparison_sample_N.png : SHAP token importance side by side")
-    print("  - prediction_summary.png       : Prediction correctness table")
+    print("  - lime_comparison_sample_N.png      : LIME feature importance side by side")
+    print("  - shap_comparison_sample_N.png      : SHAP token importance side by side")
+    print("  - ig_comparison_sample_N.png        : Integrated Gradients attribution side by side")
+    print("  - occlusion_comparison_sample_N.png : Occlusion confidence drop side by side")
+    print("  - prediction_summary.png            : Prediction correctness table")
