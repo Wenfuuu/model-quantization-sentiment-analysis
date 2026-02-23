@@ -1,0 +1,58 @@
+{
+    "test_configuration": {
+        "sample_total": 500,
+        "warmup_runs": 5,
+        "inference_runs": 20
+    },
+    "model_sizes_mb": {
+        "fp32": 474.72,
+        "fp16": 474.74,
+        "int8": 476.19
+    },
+    "fp32_baseline": {
+        "accuracy": 87.6,
+        "precision": 87.88,
+        "recall": 87.6,
+        "f1": 87.35,
+        "avg_confidence": 98.01,
+        "mean_latency_ms": 4.18,
+        "median_latency_ms": 4.18,
+        "std_latency_ms": 0.06
+    },
+    "fp16_half": {
+        "accuracy": 87.2,
+        "precision": 87.7,
+        "recall": 87.2,
+        "f1": 86.87,
+        "avg_confidence": 95.88,
+        "mean_latency_ms": 4.17,
+        "median_latency_ms": 4.18,
+        "std_latency_ms": 0.01
+    },
+    "int8_qat": {
+        "accuracy": 88.6,
+        "precision": 89.06,
+        "recall": 88.6,
+        "f1": 88.47,
+        "avg_confidence": 95.14,
+        "mean_latency_ms": 4.2,
+        "median_latency_ms": 4.2,
+        "std_latency_ms": 0.01
+    },
+    "comparisons": {
+        "fp16_vs_fp32": {
+            "size_diff_pct": 0.0,
+            "accuracy_diff": -0.4,
+            "confidence_diff": -2.12,
+            "mean_latency_diff_pct": -0.16,
+            "median_latency_diff_pct": -0.05
+        },
+        "int8_vs_fp32": {
+            "size_diff_pct": 0.31,
+            "accuracy_diff": 1.0,
+            "confidence_diff": -2.87,
+            "mean_latency_diff_pct": 0.36,
+            "median_latency_diff_pct": 0.46
+        }
+    }
+}
