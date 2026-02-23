@@ -1,9 +1,21 @@
+import os
 import sys
 import json
 import time
 import argparse
 import warnings
 from pathlib import Path
+
+# ── Redirect HuggingFace cache BEFORE any transformers import ────────────
+# The server's default cache path (/user_base/...) may not be writable.
+# We store the cache inside the project so it stays with the experiment.
+_project_root = Path(__file__).resolve().parent.parent
+_hf_cache = str(_project_root / ".hf_cache")
+os.makedirs(_hf_cache, exist_ok=True)
+os.environ.setdefault("HF_HOME", _hf_cache)
+os.environ.setdefault("TRANSFORMERS_CACHE", _hf_cache)
+os.environ.setdefault("HF_DATASETS_CACHE", _hf_cache)
+# ─────────────────────────────────────────────────────────────────────────
 
 import numpy as np
 import pandas as pd
@@ -127,15 +139,23 @@ def main(args):
     print("=" * 60)
 
     print("\nLoading tokenizer and model ...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    # Load from local save dir if it already has a config (e.g. resumed run
+    # or tokenizer was saved in a previous step). Fall back to HF Hub.
+    _local_has_config = (SAVE_DIR / "tokenizer_config.json").exists()
+    _tok_source  = str(SAVE_DIR) if _local_has_config else MODEL_ID
+    _model_source = str(SAVE_DIR) if (SAVE_DIR / "config.json").exists() else MODEL_ID
+    print(f"  Tokenizer source: {_tok_source}")
+    print(f"  Model source:     {_model_source}")
+    tokenizer = AutoTokenizer.from_pretrained(_tok_source)
     model = AutoModelForSequenceClassification.from_pretrained(
-        MODEL_ID,
+        _model_source,
         num_labels=len(LABEL2ID),
         ignore_mismatched_sizes=True,
     ).to(DEVICE)
 
+    # Always (re-)save tokenizer so the save dir is self-contained
     tokenizer.save_pretrained(SAVE_DIR)
-    print(f"Tokenizer saved to {SAVE_DIR}")
+    print(f"  Tokenizer saved to {SAVE_DIR}")
 
     print("\nLoading datasets ...")
     train_set = SMSADataset(DATA_DIR / "train.tsv", tokenizer)
