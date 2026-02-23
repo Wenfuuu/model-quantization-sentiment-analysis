@@ -496,7 +496,7 @@ def main():
     print("[LOAD] INT8 dynamic quantization (PTQ)")
     ptq = PTQQuantizer(base_model_fp32.model)
     model_int8_raw, _ = ptq.quantize_int8()
-    model_int8 = BaseModel(model_int8_raw, base_model_fp32.tokenizer)
+    model_int8 = BaseModel(model_int8_raw, base_model_fp32.tokenizer, device=torch.device("cpu"))
 
     print("\n[DATA] Loading SMSA test set")
     test_samples = load_smsa_dataset()
