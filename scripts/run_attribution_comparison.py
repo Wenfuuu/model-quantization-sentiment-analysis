@@ -1,4 +1,16 @@
+import os
 import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent
+_hf_cache = str(_project_root / ".hf_cache")
+os.makedirs(_hf_cache, exist_ok=True)
+os.environ.setdefault("HF_HOME", _hf_cache)
+os.environ.setdefault("TRANSFORMERS_CACHE", _hf_cache)
+os.environ.setdefault("HF_DATASETS_CACHE", _hf_cache)
+os.environ.setdefault("MPLCONFIGDIR", str(_project_root / ".cache" / "matplotlib"))
+os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
+
 import json
 import warnings
 import argparse
@@ -7,10 +19,10 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from pathlib import Path
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(_project_root))
+sys.path.insert(0, str(_project_root / "datasets"))
 
 from src.config import LABELS, DEVICE
 from src.models import ModelManager
@@ -45,7 +57,7 @@ from src.evaluation.per_class_analysis import (
     mcnemar_test,
     mcnemar_per_class,
 )
-from datasets.linguistic_probes import (
+from linguistic_probes import (
     get_probe_samples,
     probe_accuracy_by_phenomenon,
     PROBE_SET,
