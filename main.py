@@ -51,9 +51,11 @@ def run_xai():
 
     print_section("XAI ANALYSIS COMPLETED")
     print(f"Results saved to: outputs/{experiment_key}/xai/comparison/")
-    print("  - lime_comparison_sample_N.png : LIME side-by-side across precisions")
-    print("  - shap_comparison_sample_N.png : SHAP side-by-side across precisions")
-    print("  - prediction_summary.png       : Prediction correctness table")
+    print("  - lime_comparison_sample_N.png      : LIME side-by-side across precisions")
+    print("  - shap_comparison_sample_N.png      : SHAP side-by-side across precisions")
+    print("  - ig_comparison_sample_N.png        : Integrated Gradients side-by-side across precisions")
+    print("  - occlusion_comparison_sample_N.png : Occlusion side-by-side across precisions")
+    print("  - prediction_summary.png            : Prediction correctness table")
 
 
 def main():
