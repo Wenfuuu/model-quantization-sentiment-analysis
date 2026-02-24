@@ -2,6 +2,9 @@ import time
 from .int8 import INT8Quantizer
 from .fp16 import FP16Quantizer
 from .int4 import INT4Quantizer
+from .fake_fp16 import FakeFP16Quantizer
+from .fake_int8 import FakeINT8Quantizer
+from .fake_int4 import FakeINT4Quantizer
 
 
 class PTQQuantizer:
@@ -27,3 +30,22 @@ class PTQQuantizer:
         quantized_model.eval()
         end_time = time.perf_counter()
         return quantized_model, end_time - start_time
+
+    def quantize_fake_fp16(self):
+        start_time = time.perf_counter()
+        quantized_model = FakeFP16Quantizer.quantize(self.model)
+        end_time = time.perf_counter()
+        return quantized_model, end_time - start_time
+
+    def quantize_fake_int8(self):
+        start_time = time.perf_counter()
+        quantized_model = FakeINT8Quantizer.quantize(self.model)
+        end_time = time.perf_counter()
+        return quantized_model, end_time - start_time
+
+    def quantize_fake_int4(self):
+        start_time = time.perf_counter()
+        quantized_model = FakeINT4Quantizer.quantize(self.model)
+        end_time = time.perf_counter()
+        return quantized_model, end_time - start_time
+
