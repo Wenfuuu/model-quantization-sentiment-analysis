@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment
+from scripts.run_fake_ptq import interactive_menu as fake_ptq_menu, run_fake_ptq_experiment
 from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment
 from src.config import EXPERIMENT_CONFIGS
 from src.utils import print_section
@@ -33,6 +34,32 @@ def run_ptq():
         print(f"\n{key}:")
         print(f"  Accuracy: FP32={res['fp32_results']['accuracy']*100:.2f}% | FP16={res['fp16_results']['accuracy']*100:.2f}% | INT8={res['int8_results']['accuracy']*100:.2f}% | INT4={res['int4_results']['accuracy']*100:.2f}%")
         print(f"  Size: FP32={res['fp32_size_mb']:.1f}MB | FP16={res['fp16_size_mb']:.1f}MB | INT8={res['int8_size_mb']:.1f}MB | INT4={res['int4_size_mb']:.1f}MB")
+
+
+def run_fake_ptq():
+    selected, num_runs_override = fake_ptq_menu()
+
+    print("\n" + "=" * 80)
+    print(f"STARTING FAKE PTQ EXPERIMENTS - {len(selected)} VERSION(S) TO RUN")
+    print("=" * 80)
+    for i, key in enumerate(selected, 1):
+        print(f"  [{i}/{len(selected)}] {key}")
+    print("=" * 80 + "\n")
+
+    all_results = {}
+    for idx, version_key in enumerate(selected, 1):
+        print("\n" + "#" * 80)
+        print(f"# RUNNING FAKE PTQ EXPERIMENT [{idx}/{len(selected)}]: {version_key.upper()}")
+        print("#" * 80 + "\n")
+        result = run_fake_ptq_experiment(version_key, num_runs_override=num_runs_override)
+        all_results[version_key] = result
+        print(f"\n  Completed [{idx}/{len(selected)}]: {version_key}")
+
+    print_section("ALL FAKE PTQ EXPERIMENTS COMPLETED")
+    for key, res in all_results.items():
+        print(f"\n{key}:")
+        print(f"  Accuracy: FP32={res['fp32_results']['accuracy']*100:.2f}% | FakeFP16={res['fp16_results']['accuracy']*100:.2f}% | FakeINT8={res['int8_results']['accuracy']*100:.2f}% | FakeINT4={res['int4_results']['accuracy']*100:.2f}%")
+        print(f"  Size: FP32={res['fp32_size_mb']:.1f}MB | FakeFP16={res['fp16_size_mb']:.1f}MB | FakeINT8={res['int8_size_mb']:.1f}MB | FakeINT4={res['int4_size_mb']:.1f}MB")
 
 
 def run_xai():
@@ -71,7 +98,16 @@ def main():
     choice = input("\n  Enter choice (1/2/3): ").strip()
 
     if choice == "1":
-        run_ptq()
+        print("\n  Select PTQ Method:")
+        print("  [1] PTQ Original (Real Quantization)")
+        print("  [2] PTQ Fake Quantization (Simulated)")
+
+        ptq_choice = input("\n  Enter choice (1/2): ").strip()
+
+        if ptq_choice == "2":
+            run_fake_ptq()
+        else:
+            run_ptq()
     elif choice == "2":
         print("\n  QAT is not implemented yet.")
     elif choice == "3":
@@ -82,3 +118,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
