@@ -73,7 +73,6 @@ def sign_flip_rate(
 
     return flips / eligible if eligible > 0 else float("nan")
 
-
 def normalized_magnitude_shift(
     tokens_a: List[str],
     scores_a: List[float],
