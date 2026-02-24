@@ -110,6 +110,8 @@ class FakeQATTrainer:
     def train(self):
         if self.quantization_type == "int8":
             return self._train_int8()
+        elif self.quantization_type == "int4":
+            return self._train_int4()
         return self._train_fp16()
 
     def _train_int8(self):
@@ -151,7 +153,7 @@ class FakeQATTrainer:
             per_device_eval_batch_size=self.config.batch_size,
             num_train_epochs=self.config.epochs,
             weight_decay=self.config.weight_decay,
-            evaluation_strategy="epoch",
+            eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
             metric_for_best_model="f1",
@@ -229,7 +231,7 @@ class FakeQATTrainer:
             per_device_eval_batch_size=self.config.batch_size,
             num_train_epochs=self.config.epochs,
             weight_decay=self.config.weight_decay,
-            evaluation_strategy="epoch",
+            eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
             metric_for_best_model="f1",
@@ -278,6 +280,116 @@ class FakeQATTrainer:
 
         return train_result
 
+    def _train_int4(self):
+        from transformers import BitsAndBytesConfig
+        from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
+
+        print("=" * 70)
+        print("INT4 Fake QAT Training - SMSA Sentiment Analysis")
+        print("=" * 70)
+
+        tokenized_dataset = self._load_and_preprocess()
+
+        print(f"Train samples: {len(tokenized_dataset['train']):,}")
+        print(f"Validation samples: {len(tokenized_dataset['validation']):,}")
+        print(f"Test samples: {len(tokenized_dataset['test']):,}")
+
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+
+        model = AutoModelForSequenceClassification.from_pretrained(
+            self.config.model_id,
+            num_labels=self.config.num_labels,
+            id2label=self.config.id2label,
+            label2id=self.config.label2id,
+            quantization_config=quantization_config,
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True,
+        )
+
+        print(f"INT4 Model loaded: {model.num_parameters():,} parameters")
+
+        model.gradient_checkpointing_enable()
+        model.config.use_cache = False
+
+        model = prepare_model_for_kbit_training(model)
+
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            target_modules=["query", "key", "value"],
+            lora_dropout=0.1,
+            bias="none",
+            task_type="SEQ_CLS",
+        )
+
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+
+        output_dir = str(self.config.results_dir)
+
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            learning_rate=2e-4,
+            per_device_train_batch_size=8,
+            per_device_eval_batch_size=8,
+            num_train_epochs=self.config.epochs,
+            weight_decay=self.config.weight_decay,
+            eval_strategy="epoch",
+            save_strategy="epoch",
+            load_best_model_at_end=True,
+            metric_for_best_model="f1",
+            logging_dir=f"{output_dir}/logs",
+            logging_steps=100,
+            report_to="none",
+            fp16=True,
+            gradient_checkpointing=True,
+            optim="paged_adamw_8bit",
+            push_to_hub=False,
+        )
+
+        print(f"Output directory: {output_dir}")
+        print(f"Learning rate: {training_args.learning_rate}")
+        print(f"Batch size: {training_args.per_device_train_batch_size}")
+        print(f"Epochs: {training_args.num_train_epochs}")
+        print("Quantization: INT4 (4-bit NF4 with LoRA)")
+
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=tokenized_dataset['train'],
+            eval_dataset=tokenized_dataset['validation'],
+            compute_metrics=self._compute_metrics,
+            tokenizer=self.tokenizer,
+        )
+
+        print("\nStarting INT4 fake QAT training...")
+        train_result = trainer.train()
+
+        print("\n" + "=" * 70)
+        print("INT4 Fake QAT Training completed!")
+        print(f"Training loss: {train_result.training_loss:.4f}")
+        print(
+            f"Training runtime: {train_result.metrics['train_runtime']:.2f} seconds"
+        )
+        print(
+            f"Training samples/second:"
+            f" {train_result.metrics['train_samples_per_second']:.2f}"
+        )
+
+        save_path = str(self.config.save_dir)
+        os.makedirs(save_path, exist_ok=True)
+        trainer.save_model(save_path)
+        self.tokenizer.save_pretrained(save_path)
+
+        print(f"Model saved to: {save_path}")
+
+        return train_result
+
     def evaluate(self, model_path=None):
         if model_path is None:
             model_path = str(self.config.save_dir)
@@ -287,7 +399,22 @@ class FakeQATTrainer:
         print("=" * 70)
 
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model = AutoModelForSequenceClassification.from_pretrained(model_path)
+
+        if self.quantization_type == "int4":
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+            )
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_path,
+                quantization_config=quantization_config,
+            )
+        else:
+            model = AutoModelForSequenceClassification.from_pretrained(model_path)
+
         model.eval()
 
         print(f"Model loaded from: {model_path}")
@@ -299,7 +426,7 @@ class FakeQATTrainer:
 
         print(f"Test samples: {len(tokenized_dataset['test']):,}")
 
-        use_fp16 = self.quantization_type == "fp16"
+        use_fp16 = self.quantization_type in ("fp16", "int4")
 
         results_dir = str(self.config.results_dir)
 

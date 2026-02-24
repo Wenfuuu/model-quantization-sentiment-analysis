@@ -73,9 +73,10 @@ def interactive_menu():
     print("\n  Select Quantization Type:")
     print("  [1] INT8")
     print("  [2] FP16")
-    print("  [3] Both")
+    print("  [3] INT4")
+    print("  [4] All")
 
-    quant_choice = input("\n  Enter choice (1/2/3): ").strip()
+    quant_choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
     if method_choice == "1":
         methods = ["eager"]
@@ -88,8 +89,10 @@ def interactive_menu():
         quant_types = ["int8"]
     elif quant_choice == "2":
         quant_types = ["fp16"]
+    elif quant_choice == "3":
+        quant_types = ["int4"]
     else:
-        quant_types = ["int8", "fp16"]
+        quant_types = ["int8", "fp16", "int4"]
 
     return methods, quant_types
 
@@ -129,14 +132,14 @@ def main():
     parser.add_argument(
         "--quant-type",
         type=str,
-        choices=["int8", "fp16", "all"],
+        choices=["int8", "fp16", "int4", "all"],
         default="all",
-        help="Quantization type: int8, fp16, or all",
+        help="Quantization type: int8, fp16, int4, or all",
     )
     args = parser.parse_args()
 
     methods = ["eager", "fake"] if args.method == "all" else [args.method]
-    quant_types = ["int8", "fp16"] if args.quant_type == "all" else [args.quant_type]
+    quant_types = ["int8", "fp16", "int4"] if args.quant_type == "all" else [args.quant_type]
 
     run_qat_from_menu(methods, quant_types)
 
