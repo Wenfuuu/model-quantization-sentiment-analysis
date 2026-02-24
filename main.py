@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment
 from scripts.run_fake_ptq import interactive_menu as fake_ptq_menu, run_fake_ptq_experiment
 from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment
+from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu
 from src.config import EXPERIMENT_CONFIGS
 from src.utils import print_section
 
@@ -62,6 +63,24 @@ def run_fake_ptq():
         print(f"  Size: FP32={res['fp32_size_mb']:.1f}MB | FakeFP16={res['fp16_size_mb']:.1f}MB | FakeINT8={res['int8_size_mb']:.1f}MB | FakeINT4={res['int4_size_mb']:.1f}MB")
 
 
+def run_qat():
+    methods, quant_types = qat_menu()
+
+    total = len(methods) * len(quant_types)
+    combos = [f"{m.upper()} {q.upper()}" for m in methods for q in quant_types]
+
+    print("\n" + "=" * 80)
+    print(f"STARTING QAT EXPERIMENTS - {total} COMBINATION(S) TO RUN")
+    print("=" * 80)
+    for i, combo in enumerate(combos, 1):
+        print(f"  [{i}/{total}] {combo}")
+    print("=" * 80 + "\n")
+
+    run_qat_from_menu(methods, quant_types)
+
+    print_section("ALL QAT EXPERIMENTS COMPLETED")
+
+
 def run_xai():
     experiment_key, precisions, num_samples, divergence_samples = xai_menu()
 
@@ -109,7 +128,7 @@ def main():
         else:
             run_ptq()
     elif choice == "2":
-        print("\n  QAT is not implemented yet.")
+        run_qat()
     elif choice == "3":
         run_xai()
     else:
