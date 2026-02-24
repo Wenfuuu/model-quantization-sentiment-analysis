@@ -104,7 +104,6 @@ class InsertionDeletionEvaluator:
         return self.tokenizer.mask_token or "[MASK]"
 
     def _scores(self, model: AutoModelForSequenceClassification, tokens: List[str], order: np.ndarray) -> Tuple[List[float], List[float]]:
-        # deletion: progressively mask top-attribution tokens
         deletion_probs = []
         masked_tokens = tokens.copy()
         mask_token = self._mask_token()
@@ -115,7 +114,6 @@ class InsertionDeletionEvaluator:
             text = self.tokenizer.convert_tokens_to_string(masked_tokens)
             deletion_probs.append(self._predict_conf(model, text))
 
-        # insertion: start fully masked, gradually reveal
         insertion_probs = []
         masked_tokens = [mask_token] * len(tokens)
         for k in range(len(tokens)):
