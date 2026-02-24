@@ -84,7 +84,7 @@ def evaluate_latency(
 
             times.append(elapsed)
 
-    return float(np.mean(times) * 1000)  # milliseconds
+    return float(np.mean(times) * 1000)
 
 def load_quantized_model(base_model_id: str, state_path: Path, device: torch.device = DEVICE) -> AutoModelForSequenceClassification:
     model = AutoModelForSequenceClassification.from_pretrained(base_model_id)
