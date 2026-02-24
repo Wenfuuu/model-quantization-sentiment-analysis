@@ -147,7 +147,7 @@ class EagerQATTrainer:
             per_device_eval_batch_size=self.config.batch_size,
             num_train_epochs=self.config.epochs,
             weight_decay=self.config.weight_decay,
-            evaluation_strategy="epoch",
+            eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
             metric_for_best_model="f1",
@@ -269,6 +269,8 @@ class EagerQATTrainer:
 
         if self.quantization_type == "int8":
             return self._quantize_onnx_int8(model_fp32_onnx)
+        elif self.quantization_type == "int4":
+            return self._quantize_onnx_int4(model_fp32_onnx)
         return self._quantize_onnx_fp16(model_fp32_onnx)
 
     def _quantize_onnx_int8(self, model_fp32_onnx):
@@ -322,6 +324,31 @@ class EagerQATTrainer:
 
         return model_fp16_onnx
 
+    def _quantize_onnx_int4(self, model_fp32_onnx):
+        import onnx
+        from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer
+
+        model_int4_onnx = model_fp32_onnx.replace(".onnx", "_int4.onnx")
+
+        print("=" * 70)
+        print("Quantizing ONNX Model to INT4 (4-bit MatMul)")
+        print("=" * 70)
+
+        onnx_model = onnx.load(model_fp32_onnx)
+        quant = MatMul4BitsQuantizer(onnx_model, block_size=128, is_symmetric=True)
+        quant.process()
+        quant.model.save(model_int4_onnx)
+
+        fp32_size = os.path.getsize(model_fp32_onnx) / (1024 * 1024)
+        int4_size = os.path.getsize(model_int4_onnx) / (1024 * 1024)
+        reduction = (1 - int4_size / fp32_size) * 100
+
+        print(f"FP32 model: {fp32_size:.2f} MB")
+        print(f"INT4 model: {int4_size:.2f} MB")
+        print(f"Size reduction: {reduction:.1f}%")
+
+        return model_int4_onnx
+
     def evaluate_onnx(self, onnx_model_path=None):
         import onnxruntime as ort
 
@@ -329,6 +356,8 @@ class EagerQATTrainer:
             save_path = str(self.config.save_dir)
             if self.quantization_type == "int8":
                 onnx_model_path = os.path.join(save_path, "model_qat_int8.onnx")
+            elif self.quantization_type == "int4":
+                onnx_model_path = os.path.join(save_path, "model_qat_int4.onnx")
             else:
                 onnx_model_path = os.path.join(save_path, "model_qat_fp16.onnx")
 
