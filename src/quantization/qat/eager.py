@@ -170,7 +170,7 @@ class EagerQATTrainer:
             train_dataset=tokenized_dataset['train'],
             eval_dataset=tokenized_dataset['validation'],
             compute_metrics=compute_metrics,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
 
         print("\nStarting QAT training...")
