@@ -176,7 +176,7 @@ class FakeQATTrainer:
             train_dataset=tokenized_dataset['train'],
             eval_dataset=tokenized_dataset['validation'],
             compute_metrics=self._compute_metrics,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
 
         print("\nStarting INT8 fake QAT training...")
@@ -254,7 +254,7 @@ class FakeQATTrainer:
             train_dataset=tokenized_dataset['train'],
             eval_dataset=tokenized_dataset['validation'],
             compute_metrics=self._compute_metrics,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
 
         print("\nStarting FP16 mixed precision training...")
@@ -364,7 +364,7 @@ class FakeQATTrainer:
             train_dataset=tokenized_dataset['train'],
             eval_dataset=tokenized_dataset['validation'],
             compute_metrics=self._compute_metrics,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
 
         print("\nStarting INT4 fake QAT training...")
