@@ -326,7 +326,7 @@ class EagerQATTrainer:
 
     def _quantize_onnx_int4(self, model_fp32_onnx):
         import onnx
-        from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer
+        from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
 
         model_int4_onnx = model_fp32_onnx.replace(".onnx", "_int4.onnx")
 
@@ -335,7 +335,7 @@ class EagerQATTrainer:
         print("=" * 70)
 
         onnx_model = onnx.load(model_fp32_onnx)
-        quant = MatMul4BitsQuantizer(onnx_model, block_size=128, is_symmetric=True)
+        quant = MatMulNBitsQuantizer(onnx_model, block_size=128, is_symmetric=True, bits=4)
         quant.process()
         quant.model.save(model_int4_onnx)
 
