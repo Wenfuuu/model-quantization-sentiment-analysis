@@ -366,9 +366,14 @@ class EagerQATTrainer:
         print("=" * 70)
 
         sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = (
-            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        )
+        if self.quantization_type == "fp16":
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+            )
+        else:
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            )
 
         session = ort.InferenceSession(
             onnx_model_path,
