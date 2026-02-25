@@ -45,12 +45,12 @@ class QuantizationPlotter:
         
         colors = ['#3498db', '#9b59b6', '#2ecc71', '#e74c3c']
         for i, (predictions, label) in enumerate(zip(predictions_list, labels)):
-            confidences = [p['confidence']*100 for p in predictions]
+            confidences = [p['confidence'] * 100 for p in predictions]
             offset = (i - len(predictions_list)/2 + 0.5) * width
             ax.bar(x + offset, confidences, width, label=label, color=colors[i], alpha=0.8)
         
         ax.set_xlabel('Sample Index', fontweight='bold')
-        ax.set_ylabel('Confidence (%)', fontweight='bold')
+        ax.set_ylabel('Confidence', fontweight='bold')
         ax.set_title('Per-Sample Confidence Comparison', fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels([str(i+1) for i in x])
@@ -72,7 +72,7 @@ class QuantizationPlotter:
             offset = (i - len(metrics_list)/2 + 0.5) * width
             ax.bar(x + offset, metrics, width, label=label, color=colors[i], alpha=0.8)
         
-        ax.set_ylabel('Percentage (%)', fontweight='bold')
+        ax.set_ylabel('Score', fontweight='bold')
         ax.set_title('Overall Performance Metrics', fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(metric_names)
@@ -95,8 +95,8 @@ class QuantizationPlotter:
         bars = ax.bar(precision_labels, accuracies, color=colors, edgecolor='black', linewidth=1.2)
         for bar, val in zip(bars, accuracies):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                    f'{val:.1f}%', ha='center', va='bottom', fontweight='bold', fontsize=9)
-        ax.set_ylabel('Accuracy (%)', fontweight='bold')
+                    f'{val:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
+        ax.set_ylabel('Accuracy', fontweight='bold')
         ax.set_title('Accuracy Comparison', fontweight='bold')
         ax.set_ylim(0, max(accuracies) * 1.15)
 
@@ -117,8 +117,8 @@ class QuantizationPlotter:
         bars = ax.bar(precision_labels, confidences, color=colors, edgecolor='black', linewidth=1.2)
         for bar, val in zip(bars, confidences):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                    f'{val:.1f}%', ha='center', va='bottom', fontweight='bold', fontsize=9)
-        ax.set_ylabel('Confidence (%)', fontweight='bold')
+                    f'{val:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
+        ax.set_ylabel('Confidence', fontweight='bold')
         ax.set_title('Average Confidence', fontweight='bold')
         ax.set_ylim(0, max(confidences) * 1.15)
 
