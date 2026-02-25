@@ -1,0 +1,10 @@
+- kalau udah pake kurung siku udah ga perlu nama lagi
+- kutip yang quantize indobert
+- litteraly means... untuk yang bahasa indonesia (jangan litteraly means jangan) 
+- ke paper anak anaknya lebih better
+- kalau misalkan ada kata kata technical gpp lgsg di cite aja 
+- gunakan decimal drpd percentage
+- yang linguistic sama stress test buat aga unik spy lebih baik
+- betternya kasi solusi diakhir paper daripada cuman compare
+- cari visualisasi yang bagus untuk paper
+- betternya satu gambar utuh untuk flowchart drpd banyak banyak
