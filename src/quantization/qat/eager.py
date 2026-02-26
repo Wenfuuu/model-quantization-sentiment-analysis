@@ -310,12 +310,8 @@ class EagerQATTrainer:
 
         onnx_model = onnx.load(model_fp32_onnx)
         onnx_model_fp16 = float16.convert_float_to_float16(
-            onnx_model, keep_io_types=True
+            onnx_model, disable_shape_infer=True
         )
-
-        while len(onnx_model_fp16.graph.value_info) > 0:
-            onnx_model_fp16.graph.value_info.pop()
-
         onnx.save(onnx_model_fp16, model_fp16_onnx)
 
         fp32_size = os.path.getsize(model_fp32_onnx) / (1024 * 1024)
