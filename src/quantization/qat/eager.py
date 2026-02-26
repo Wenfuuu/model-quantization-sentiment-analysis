@@ -310,7 +310,9 @@ class EagerQATTrainer:
         print("=" * 70)
 
         onnx_model = onnx.load(model_fp32_onnx)
-        onnx_model_fp16 = float16.convert_float_to_float16(onnx_model)
+        onnx_model_fp16 = float16.convert_float_to_float16(
+            onnx_model, op_block_list=[]
+        )
 
         for initializer in onnx_model_fp16.graph.initializer:
             if initializer.data_type == TensorProto.FLOAT:
@@ -319,12 +321,11 @@ class EagerQATTrainer:
                 initializer.CopyFrom(new_init)
 
         for node in onnx_model_fp16.graph.node:
-            if node.op_type == 'Constant':
-                for attr in node.attribute:
-                    if attr.name == 't' and attr.t.data_type == TensorProto.FLOAT:
-                        data = numpy_helper.to_array(attr.t).astype(np.float16)
-                        new_tensor = numpy_helper.from_array(data)
-                        attr.t.CopyFrom(new_tensor)
+            for attr in node.attribute:
+                if attr.type == onnx.AttributeProto.TENSOR and attr.t.data_type == TensorProto.FLOAT:
+                    data = numpy_helper.to_array(attr.t).astype(np.float16)
+                    new_tensor = numpy_helper.from_array(data)
+                    attr.t.CopyFrom(new_tensor)
 
         while len(onnx_model_fp16.graph.value_info) > 0:
             onnx_model_fp16.graph.value_info.pop()
