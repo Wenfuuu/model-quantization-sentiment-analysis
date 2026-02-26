@@ -1,0 +1,48 @@
+{
+    "model_type": "FP16",
+    "method": "eager",
+    "provider": "CPUExecutionProvider",
+    "overall_metrics": {
+        "accuracy": 0.848,
+        "precision": 0.8555319703141431,
+        "recall": 0.848,
+        "f1": 0.8423536705976181,
+        "total_samples": 500,
+        "total_time_seconds": 14.732778072357178,
+        "avg_time_per_batch_ms": 460.3993147611618,
+        "samples_per_second": 33.937930615960354
+    },
+    "classification_report": {
+        "Positive": {
+            "precision": 0.8430493273542601,
+            "recall": 0.9038461538461539,
+            "f1-score": 0.8723897911832946,
+            "support": 208.0
+        },
+        "Neutral": {
+            "precision": 0.9433962264150944,
+            "recall": 0.5681818181818182,
+            "f1-score": 0.7092198581560284,
+            "support": 88.0
+        },
+        "Negative": {
+            "precision": 0.8303571428571429,
+            "recall": 0.9117647058823529,
+            "f1-score": 0.8691588785046729,
+            "support": 204.0
+        },
+        "accuracy": 0.848,
+        "macro avg": {
+            "precision": 0.8722675655421658,
+            "recall": 0.7945975593034417,
+            "f1-score": 0.8169228426146654,
+            "support": 500.0
+        },
+        "weighted avg": {
+            "precision": 0.8555319703141431,
+            "recall": 0.848,
+            "f1-score": 0.8423536705976181,
+            "support": 500.0
+        }
+    }
+}
