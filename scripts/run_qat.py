@@ -12,6 +12,7 @@ from src.quantization.qat.fake import FakeQATTrainer
 
 def get_default_config(method, quant_type):
     data_dir = BASE_DIR / "src" / "finetune_3label"
+    output_dir = BASE_DIR / "outputs"
 
     if method == "eager":
         save_name = f"indobert-qat-{quant_type}-smsa"
@@ -25,8 +26,8 @@ def get_default_config(method, quant_type):
         train_file=data_dir / "train.tsv",
         valid_file=data_dir / "valid.tsv",
         test_file=data_dir / "test.tsv",
-        save_dir=data_dir / "results" / save_name,
-        results_dir=data_dir / "results" / results_name,
+        save_dir=output_dir / save_name,
+        results_dir=output_dir / results_name,
     )
 
 
