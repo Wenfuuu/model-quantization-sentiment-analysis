@@ -11,7 +11,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
-from datasets import load_dataset
+from datasets import load_dataset, disable_caching
 from sklearn.metrics import (
     accuracy_score,
     precision_recall_fscore_support,
@@ -47,6 +47,7 @@ class FakeQATTrainer:
         return ' '.join(words)
 
     def _load_and_preprocess(self, splits=None):
+        disable_caching()
         if splits is None:
             splits = {
                 'train': str(self.config.train_file),
