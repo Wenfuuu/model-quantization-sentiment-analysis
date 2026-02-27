@@ -455,7 +455,7 @@ class FakeQATTrainer:
             args=eval_args,
             eval_dataset=tokenized_dataset["test"],
             compute_metrics=self._compute_metrics,
-            tokenizer=tokenizer,
+            processing_class=tokenizer,
         )
 
         print(
