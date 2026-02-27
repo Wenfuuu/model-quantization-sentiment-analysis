@@ -143,6 +143,7 @@ class EagerQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
+            overwrite_output_dir=True,
             learning_rate=self.config.learning_rate,
             per_device_train_batch_size=self.config.batch_size,
             per_device_eval_batch_size=self.config.batch_size,
