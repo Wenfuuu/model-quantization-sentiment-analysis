@@ -197,7 +197,11 @@ class FakeQATTrainer:
         trainer.save_model(save_path)
         self.tokenizer.save_pretrained(save_path)
 
+        ptq_model_path = os.path.join(save_path, "model_int8.pth")
+        torch.save(model.state_dict(), ptq_model_path)
+        ptq_size = os.path.getsize(ptq_model_path) / (1024 * 1024)
         print(f"Model saved to: {save_path}")
+        print(f"PTQ-compatible model saved: {ptq_model_path} ({ptq_size:.2f} MB)")
 
         return train_result
 
@@ -276,7 +280,11 @@ class FakeQATTrainer:
         trainer.save_model(save_path)
         self.tokenizer.save_pretrained(save_path)
 
+        ptq_model_path = os.path.join(save_path, "model_fp16.pth")
+        torch.save(model.state_dict(), ptq_model_path)
+        ptq_size = os.path.getsize(ptq_model_path) / (1024 * 1024)
         print(f"Model saved to: {save_path}")
+        print(f"PTQ-compatible model saved: {ptq_model_path} ({ptq_size:.2f} MB)")
 
         return train_result
 
@@ -387,6 +395,7 @@ class FakeQATTrainer:
         self.tokenizer.save_pretrained(save_path)
 
         print(f"Model saved to: {save_path}")
+        print(f"Note: INT4 model uses LoRA adapters, load with PEFT for XAI")
 
         return train_result
 
@@ -411,9 +420,13 @@ class FakeQATTrainer:
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_path,
                 quantization_config=quantization_config,
+                num_labels=self.config.num_labels,
             )
         else:
-            model = AutoModelForSequenceClassification.from_pretrained(model_path)
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_path,
+                num_labels=self.config.num_labels,
+            )
 
         model.eval()
 

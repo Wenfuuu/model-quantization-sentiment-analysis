@@ -195,6 +195,25 @@ class EagerQATTrainer:
         )
         print(f"QAT model saved to: {save_path} ({qat_size:.2f} MB)")
 
+        clean_model = AutoModelForSequenceClassification.from_pretrained(
+            self.config.model_id,
+            num_labels=self.config.num_labels,
+            id2label=self.config.id2label,
+            label2id=self.config.label2id,
+        )
+        qat_state = model_qat.state_dict()
+        clean_model.load_state_dict(qat_state, strict=False)
+        clean_model.eval()
+
+        ptq_model_path = os.path.join(save_path, f"model_{self.quantization_type}.pth")
+        torch.save(clean_model.state_dict(), ptq_model_path)
+        clean_model.save_pretrained(os.path.join(save_path, "hf_model"))
+        self.tokenizer.save_pretrained(os.path.join(save_path, "hf_model"))
+
+        ptq_size = os.path.getsize(ptq_model_path) / (1024 * 1024)
+        print(f"PTQ-compatible model saved: {ptq_model_path} ({ptq_size:.2f} MB)")
+        print(f"HuggingFace model saved: {os.path.join(save_path, 'hf_model')}")
+
         return train_result
 
     def export_to_onnx(self):
