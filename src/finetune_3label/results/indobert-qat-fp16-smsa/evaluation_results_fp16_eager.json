@@ -8,9 +8,9 @@
         "recall": 0.85,
         "f1": 0.8460547559080605,
         "total_samples": 500,
-        "total_time_seconds": 19.05920147895813,
-        "avg_time_per_batch_ms": 595.6000462174416,
-        "samples_per_second": 26.234047662070914
+        "total_time_seconds": 14.683965682983398,
+        "avg_time_per_batch_ms": 458.8739275932312,
+        "samples_per_second": 34.050746970855975
     },
     "classification_report": {
         "Positive": {
