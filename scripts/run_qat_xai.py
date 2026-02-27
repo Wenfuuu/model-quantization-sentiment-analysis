@@ -19,7 +19,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 warnings.filterwarnings('ignore')
 
-QAT_OUTPUT_DIR = BASE_DIR / "src" / "finetune_3label" / "results"
+QAT_OUTPUT_DIR = BASE_DIR / "outputs"
 
 SAMPLE_TEXTS = [
     "Film ini sangat bagus dan menghibur, saya suka sekali",

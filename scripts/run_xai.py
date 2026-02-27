@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import EXPERIMENT_CONFIGS, LABELS, DEVICE
+from src.config import EXPERIMENT_CONFIGS, QAT_EXPERIMENT_CONFIGS, LABELS, DEVICE
 from src.data import load_smsa_dataset, load_tweets_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
@@ -348,13 +348,12 @@ def interactive_menu():
 
     print("\n  Select Quantization Method:")
     print("  [1] PTQ (Post-Training Quantization)")
-    print("  [2] QAT (Quantization-Aware Training) [Not Implemented]")
+    print("  [2] QAT (Quantization-Aware Training)")
 
     method_choice = input("\n  Enter choice (1/2): ").strip()
 
     if method_choice == "2":
-        print("\n  QAT is not implemented yet.")
-        sys.exit(0)
+        return _qat_menu()
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
@@ -509,13 +508,59 @@ def interactive_menu():
     return experiment_key, precisions, num_samples, None
 
 
+def _qat_menu():
+    print("\n  Select QAT Method:")
+    print("  [1] Eager (ONNX pipeline models)")
+    print("  [2] Fake  (HuggingFace saved models)")
+
+    qat_method_choice = input("\n  Enter choice (1/2): ").strip()
+
+    if qat_method_choice == "1":
+        experiment_key = "qat_eager_smsa"
+    else:
+        experiment_key = "qat_fake_smsa"
+
+    print("\n  Select Quantization Type:")
+    print("  [1] INT8")
+    print("  [2] FP16")
+    print("  [3] INT4")
+    print("  [4] All")
+
+    quant_choice = input("\n  Enter choice (1/2/3/4): ").strip()
+
+    if quant_choice == "1":
+        precisions = ["int8"]
+    elif quant_choice == "2":
+        precisions = ["fp16"]
+    elif quant_choice == "3":
+        precisions = ["int4"]
+    else:
+        precisions = ["int8", "fp16", "int4"]
+
+    num_samples_str = input("\n  Number of samples to explain (default 3): ").strip()
+    num_samples = int(num_samples_str) if num_samples_str else 3
+
+    return experiment_key, precisions, num_samples, None
+
+
+def _is_qat_experiment(version_key):
+    return version_key in QAT_EXPERIMENT_CONFIGS
+
+
 def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=None):
-    config = EXPERIMENT_CONFIGS[version_key]
+    is_qat = _is_qat_experiment(version_key)
+
+    if is_qat:
+        config = QAT_EXPERIMENT_CONFIGS[version_key]
+    else:
+        config = EXPERIMENT_CONFIGS[version_key]
+
     output_dir = Path(config["output_dir"])
     comparison_dir = output_dir / "xai" / "comparison"
 
     print_section(f"XAI EXPERIMENT: {version_key}")
-    print(f"Model: {config['model_id']}")
+    if not is_qat:
+        print(f"Model: {config['model_id']}")
     print(f"Dataset: {config['dataset']}")
     print(f"Precisions: {', '.join(precisions)}")
 
@@ -534,8 +579,9 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
     for i, s in enumerate(samples, 1):
         print(f"  {i}. [{s['expected']}] \"{s['text']}\"")
 
-    print(f"\nLoading model: {config['model_id']}")
-    base_model = ModelManager.load_model(config['model_id'])
+    if not is_qat:
+        print(f"\nLoading model: {config['model_id']}")
+        base_model = ModelManager.load_model(config['model_id'])
 
     all_lime = {}
     all_shap = {}
@@ -545,7 +591,18 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
     for precision in precisions:
         print_section(f"COLLECTING XAI DATA - {precision.upper()}")
 
-        if precision == "fp32":
+        if is_qat:
+            model_path = config["model_paths"][precision]
+            if not Path(model_path).exists():
+                print(f"  Model not found: {model_path}")
+                print(f"  Please run QAT training first.")
+                continue
+            print(f"  Loading QAT model: {model_path}")
+            qat_model = ModelManager.load_model(model_path)
+            use_fp16 = precision == "fp16"
+            lime_res, shap_res, ig_res, occ_res = collect_xai_results(qat_model, precision, samples, use_fp16=use_fp16)
+
+        elif precision == "fp32":
             lime_res, shap_res, ig_res, occ_res = collect_xai_results(base_model, "fp32", samples)
 
         elif precision == "fp16":
