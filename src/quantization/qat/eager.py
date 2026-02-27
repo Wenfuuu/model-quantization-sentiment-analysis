@@ -12,7 +12,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
-from datasets import load_dataset, disable_caching
+from datasets import Dataset, DatasetDict, disable_caching
 from sklearn.metrics import (
     accuracy_score,
     precision_recall_fscore_support,
@@ -48,6 +48,7 @@ class EagerQATTrainer:
         return ' '.join(words)
 
     def _load_and_preprocess(self, splits=None):
+        import pandas as pd
         disable_caching()
         if splits is None:
             splits = {
@@ -56,37 +57,29 @@ class EagerQATTrainer:
                 'test': str(self.config.test_file),
             }
 
-        dataset = load_dataset(
-            'csv',
-            data_files=splits,
-            delimiter='\t',
-            column_names=['text', 'label'],
-        )
-
         label2id = self.config.label2id
-
-        def map_labels(df):
-            df['label'] = [label2id[label] for label in df['label']]
-            return df
-
-        dataset = dataset.map(map_labels, batched=True)
-
         preprocess = self._preprocess_text
         tokenizer = self.tokenizer
         max_length = self.config.max_length
 
-        def preprocess_and_tokenize(batch):
-            preprocessed = [preprocess(text) for text in batch["text"]]
+        dataset_dict = {}
+        for split_name, split_path in splits.items():
+            df = pd.read_csv(split_path, sep='\t', header=None, names=['text', 'label'])
+            df['text'] = df['text'].apply(preprocess)
+            df['label'] = df['label'].map(label2id)
+            dataset_dict[split_name] = Dataset.from_pandas(df[['text', 'label']], preserve_index=False)
+
+        dataset = DatasetDict(dataset_dict)
+
+        def tokenize_fn(batch):
             return tokenizer(
-                preprocessed,
+                batch['text'],
                 truncation=True,
-                padding="max_length",
+                padding='max_length',
                 max_length=max_length,
             )
 
-        tokenized = dataset.map(
-            preprocess_and_tokenize, batched=True, remove_columns=['text']
-        )
+        tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=['text'])
         return tokenized
 
     def train(self):
