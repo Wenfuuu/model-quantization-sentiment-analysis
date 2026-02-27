@@ -113,7 +113,7 @@ class EagerQATTrainer:
 
         model.train()
         model.qconfig = torch.quantization.QConfig(
-            activation=torch.quantization.fake_quantize.default_fake_quant,
+            activation=torch.quantization.default_fake_quant,
             weight=torch.quantization.default_weight_fake_quant,
         )
 
