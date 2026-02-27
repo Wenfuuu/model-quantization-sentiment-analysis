@@ -1,0 +1,48 @@
+{
+    "model_type": "INT4",
+    "method": "eager",
+    "provider": "CPUExecutionProvider",
+    "overall_metrics": {
+        "accuracy": 0.848,
+        "precision": 0.8524474472737369,
+        "recall": 0.848,
+        "f1": 0.8449698560040331,
+        "total_samples": 500,
+        "total_time_seconds": 10.094801425933838,
+        "avg_time_per_batch_ms": 315.46254456043243,
+        "samples_per_second": 49.530444325084545
+    },
+    "classification_report": {
+        "Positive": {
+            "precision": 0.8486238532110092,
+            "recall": 0.8894230769230769,
+            "f1-score": 0.8685446009389671,
+            "support": 208.0
+        },
+        "Neutral": {
+            "precision": 0.9180327868852459,
+            "recall": 0.6363636363636364,
+            "f1-score": 0.7516778523489933,
+            "support": 88.0
+        },
+        "Negative": {
+            "precision": 0.8280542986425339,
+            "recall": 0.8970588235294118,
+            "f1-score": 0.8611764705882353,
+            "support": 204.0
+        },
+        "accuracy": 0.848,
+        "macro avg": {
+            "precision": 0.864903646246263,
+            "recall": 0.8076151789387084,
+            "f1-score": 0.8271329746253987,
+            "support": 500.0
+        },
+        "weighted avg": {
+            "precision": 0.8524474472737369,
+            "recall": 0.848,
+            "f1-score": 0.8449698560040331,
+            "support": 500.0
+        }
+    }
+}

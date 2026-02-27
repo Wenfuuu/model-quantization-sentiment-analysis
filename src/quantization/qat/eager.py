@@ -368,7 +368,7 @@ class EagerQATTrainer:
         onnx_model = onnx.load(model_fp32_onnx)
         quant = MatMulNBitsQuantizer(onnx_model, block_size=128, is_symmetric=True, bits=4)
         quant.process()
-        quant.model.save(model_int4_onnx)
+        onnx.save(quant.model.model, model_int4_onnx)
 
         fp32_size = os.path.getsize(model_fp32_onnx) / (1024 * 1024)
         int4_size = os.path.getsize(model_int4_onnx) / (1024 * 1024)
