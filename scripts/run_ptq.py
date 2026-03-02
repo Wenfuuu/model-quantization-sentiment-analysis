@@ -49,7 +49,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     
     print(f"\nLoading model: {config['model_id']}")
-    base_model = ModelManager.load_model(config['model_id'])
+    base_model = ModelManager.load_model(config['model_id'], device=torch.device("cpu"))
     
     total_params, trainable_params = base_model.count_parameters()
     print(f"\nTotal Parameters: {total_params:,}")
@@ -88,7 +88,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     print(f"FP16 model saved: {fp16_path} ({fp16_size_mb:.2f} MB)")
     print(f"Size Reduction: {(1 - fp16_size_mb/fp32_size_mb)*100:.2f}%")
     
-    base_model_fp16 = BaseModel(model_fp16, base_model.tokenizer)
+    base_model_fp16 = BaseModel(model_fp16, base_model.tokenizer, device=torch.device("cpu"))
     evaluator_fp16 = ModelEvaluator(base_model_fp16)
     fp16_results = evaluator_fp16.evaluate(test_samples, num_runs=num_runs, warmup=warmup, use_fp16=True)
     
@@ -126,7 +126,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     print(f"INT4 model saved: {int4_path} ({int4_size_mb:.2f} MB)")
     print(f"Size Reduction: {(1 - int4_size_mb/fp32_size_mb)*100:.2f}%")
     
-    base_model_int4 = BaseModel(model_int4, base_model.tokenizer)
+    base_model_int4 = BaseModel(model_int4, base_model.tokenizer, device=torch.device("cpu"))
     evaluator_int4 = ModelEvaluator(base_model_int4)
     int4_results = evaluator_int4.evaluate(test_samples, num_runs=num_runs, warmup=warmup)
     
