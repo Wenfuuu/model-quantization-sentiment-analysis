@@ -160,6 +160,7 @@ class FakeQATTrainer:
             logging_steps=100,
             report_to="none",
             fp16=False,
+            no_cuda=True,
             push_to_hub=False,
         )
 
@@ -242,7 +243,8 @@ class FakeQATTrainer:
             logging_dir=f"{output_dir}/logs",
             logging_steps=100,
             report_to="none",
-            fp16=True,
+            fp16=False,
+            no_cuda=True,
             push_to_hub=False,
         )
 
@@ -355,7 +357,8 @@ class FakeQATTrainer:
             logging_dir=f"{output_dir}/logs",
             logging_steps=100,
             report_to="none",
-            fp16=True,
+            fp16=False,
+            no_cuda=True,
             gradient_checkpointing=True,
             optim="paged_adamw_8bit",
             push_to_hub=False,
@@ -451,7 +454,8 @@ class FakeQATTrainer:
             output_dir=results_dir,
             overwrite_output_dir=True,
             per_device_eval_batch_size=self.config.batch_size,
-            fp16=use_fp16,
+            fp16=False,
+            no_cuda=True,
             report_to="none",
         )
 
