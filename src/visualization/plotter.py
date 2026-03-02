@@ -137,3 +137,120 @@ class QuantizationPlotter:
         plt.close()
 
         return chart_path
+
+    def create_qat_comparison_plot(self, all_results, method_name):
+        quant_labels = []
+        quant_keys = []
+        for k in ['int8', 'fp16', 'int4']:
+            if k in all_results:
+                quant_keys.append(k)
+                quant_labels.append(k.upper())
+
+        if len(quant_keys) < 2:
+            return None
+
+        colors_map = {'int8': '#2ecc71', 'fp16': '#9b59b6', 'int4': '#e74c3c'}
+        colors = [colors_map[k] for k in quant_keys]
+
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig.suptitle(f'QAT Analysis: {method_name.upper()} Method', fontsize=14, fontweight='bold')
+
+        ax = axes[0, 0]
+        accuracies = []
+        for k in quant_keys:
+            metrics = all_results[k]['overall_metrics']
+            acc = metrics.get('accuracy', metrics.get('eval_accuracy', 0))
+            accuracies.append(acc * 100)
+        bars = ax.bar(quant_labels, accuracies, color=colors, edgecolor='black', linewidth=1.2)
+        for bar, val in zip(bars, accuracies):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                    f'{val:.2f}%', ha='center', va='bottom', fontweight='bold', fontsize=9)
+        ax.set_ylabel('Accuracy (%)', fontweight='bold')
+        ax.set_title('Accuracy Comparison', fontweight='bold')
+        ax.set_ylim(0, max(accuracies) * 1.15)
+
+        ax = axes[0, 1]
+        metric_names = ['Precision', 'Recall', 'F1']
+        x = np.arange(len(metric_names))
+        width = 0.8 / len(quant_keys)
+        for i, k in enumerate(quant_keys):
+            metrics = all_results[k]['overall_metrics']
+            p = metrics.get('precision', metrics.get('eval_precision', 0)) * 100
+            r = metrics.get('recall', metrics.get('eval_recall', 0)) * 100
+            f = metrics.get('f1', metrics.get('eval_f1', 0)) * 100
+            vals = [p, r, f]
+            offset = (i - len(quant_keys) / 2 + 0.5) * width
+            bars = ax.bar(x + offset, vals, width, label=quant_labels[i],
+                          color=colors[i], edgecolor='black', linewidth=0.8)
+            for bar, val in zip(bars, vals):
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2,
+                        f'{val:.1f}', ha='center', va='bottom', fontsize=7)
+        ax.set_xticks(x)
+        ax.set_xticklabels(metric_names)
+        ax.set_ylabel('Score (%)', fontweight='bold')
+        ax.set_title('Precision / Recall / F1', fontweight='bold')
+        ax.legend()
+        ax.set_ylim(0, 110)
+
+        ax = axes[1, 0]
+        class_names = []
+        report = all_results[quant_keys[0]].get('classification_report', {})
+        for cls_name in report:
+            if cls_name not in ('accuracy', 'macro avg', 'weighted avg'):
+                class_names.append(cls_name)
+        if class_names:
+            x = np.arange(len(class_names))
+            width = 0.8 / len(quant_keys)
+            for i, k in enumerate(quant_keys):
+                report = all_results[k].get('classification_report', {})
+                f1_vals = [report.get(c, {}).get('f1-score', 0) * 100 for c in class_names]
+                offset = (i - len(quant_keys) / 2 + 0.5) * width
+                bars = ax.bar(x + offset, f1_vals, width, label=quant_labels[i],
+                              color=colors[i], edgecolor='black', linewidth=0.8)
+                for bar, val in zip(bars, f1_vals):
+                    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2,
+                            f'{val:.1f}', ha='center', va='bottom', fontsize=7)
+            ax.set_xticks(x)
+            ax.set_xticklabels(class_names)
+            ax.set_ylabel('F1 Score (%)', fontweight='bold')
+            ax.set_title('Per-Class F1 Score', fontweight='bold')
+            ax.legend()
+            ax.set_ylim(0, 110)
+
+        ax = axes[1, 1]
+        has_latencies = any('latencies' in all_results[k] for k in quant_keys)
+        if has_latencies:
+            latency_data = []
+            latency_labels = []
+            latency_colors = []
+            for i, k in enumerate(quant_keys):
+                if 'latencies' in all_results[k]:
+                    latencies_ms = [l * 1000 for l in all_results[k]['latencies']]
+                    latency_data.append(latencies_ms)
+                    latency_labels.append(quant_labels[i])
+                    latency_colors.append(colors[i])
+            bp = ax.boxplot(latency_data, labels=latency_labels, patch_artist=True)
+            for patch, color in zip(bp['boxes'], latency_colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            ax.set_ylabel('Inference Latency (ms)', fontweight='bold')
+            ax.set_title('Latency Distribution', fontweight='bold')
+        else:
+            speeds = []
+            for k in quant_keys:
+                metrics = all_results[k]['overall_metrics']
+                spd = metrics.get('samples_per_second', metrics.get('eval_samples_per_second', 0))
+                speeds.append(spd)
+            bars = ax.bar(quant_labels, speeds, color=colors, edgecolor='black', linewidth=1.2)
+            for bar, val in zip(bars, speeds):
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                        f'{val:.1f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
+            ax.set_ylabel('Samples/Second', fontweight='bold')
+            ax.set_title('Inference Speed', fontweight='bold')
+
+        plt.tight_layout()
+        chart_path = self.output_dir / f'qat_comparison_{method_name}.png'
+        plt.savefig(chart_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        return chart_path
