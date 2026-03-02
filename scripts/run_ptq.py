@@ -229,6 +229,12 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     print(f"  INT4 vs FP32 p-value: {conf_comp_int4['p_value']:.6f}")
     
     plotter = QuantizationPlotter(output_dir)
+    model_sizes = {
+        "fp32": fp32_size_mb,
+        "fp16": fp16_size_mb,
+        "int8": int8_size_mb,
+        "int4": int4_size_mb,
+    }
     chart_path = plotter.create_comprehensive_plot(
         {
             "fp32": fp32_results,
@@ -237,7 +243,8 @@ def run_ptq_experiment(version_key, num_runs_override=None):
             "int4": int4_results
         },
         test_samples,
-        version_key
+        version_key,
+        model_sizes=model_sizes
     )
     print(f"\nVisualization saved to: {chart_path}")
     
