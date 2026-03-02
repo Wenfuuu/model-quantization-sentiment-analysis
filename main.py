@@ -64,19 +64,21 @@ def run_fake_ptq():
 
 
 def run_qat():
-    methods, quant_types = qat_menu()
+    methods, quant_types, dataset_path = qat_menu()
 
     total = len(methods) * len(quant_types)
     combos = [f"{m.upper()} {q.upper()}" for m in methods for q in quant_types]
 
     print("\n" + "=" * 80)
     print(f"STARTING QAT EXPERIMENTS - {total} COMBINATION(S) TO RUN")
+    if dataset_path:
+        print(f"Evaluation Dataset: {dataset_path}")
     print("=" * 80)
     for i, combo in enumerate(combos, 1):
         print(f"  [{i}/{total}] {combo}")
     print("=" * 80 + "\n")
 
-    run_qat_from_menu(methods, quant_types)
+    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path)
 
     print_section("ALL QAT EXPERIMENTS COMPLETED")
 
