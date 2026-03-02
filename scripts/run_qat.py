@@ -139,9 +139,27 @@ def _generate_qat_comparison(method, quant_types):
         print(f"\nSkipping {method.upper()} comparison graph (need at least 2 results, found {len(all_results)})")
         return
 
+    import os
     output_dir = BASE_DIR / "outputs"
+    model_sizes = {}
+    for qt in quant_types:
+        if qt not in all_results:
+            continue
+        if method == "eager":
+            model_dir = output_dir / f"indobert-qat-{qt}-smsa"
+            onnx_file = model_dir / f"model_qat_{qt}.onnx"
+            if onnx_file.exists():
+                model_sizes[qt] = os.path.getsize(onnx_file) / (1024 * 1024)
+        else:
+            model_dir = output_dir / f"indobert-smsa-qat-{qt}-fake"
+            pth_file = model_dir / f"model_{qt}.pth"
+            if pth_file.exists():
+                model_sizes[qt] = os.path.getsize(pth_file) / (1024 * 1024)
+            elif (model_dir / "model.safetensors").exists():
+                model_sizes[qt] = os.path.getsize(model_dir / "model.safetensors") / (1024 * 1024)
+
     plotter = QuantizationPlotter(output_dir)
-    chart_path = plotter.create_qat_comparison_plot(all_results, method)
+    chart_path = plotter.create_qat_comparison_plot(all_results, method, model_sizes=model_sizes)
     print(f"\nQAT {method.upper()} comparison chart saved to: {chart_path}")
 
 
