@@ -28,6 +28,11 @@ from .per_class_analysis import (
     mcnemar_test,
     mcnemar_per_class,
 )
+from .stress_test import (
+    run_edge_case_test,
+    run_noise_robustness_test,
+    run_calibration_stress_test,
+)
 
 __all__ = [
     "ModelEvaluator",
@@ -58,4 +63,8 @@ __all__ = [
     "plot_per_class_f1_comparison",
     "mcnemar_test",
     "mcnemar_per_class",
+    # Stress test
+    "run_edge_case_test",
+    "run_noise_robustness_test",
+    "run_calibration_stress_test",
 ]
