@@ -13,7 +13,6 @@ from src.visualization import QuantizationPlotter
 
 
 def get_default_config(method, quant_type):
-    data_dir = BASE_DIR / "src" / "finetune_3label"
     output_dir = BASE_DIR / "outputs"
 
     if method == "eager":
@@ -25,9 +24,9 @@ def get_default_config(method, quant_type):
 
     return FinetuneQATConfig(
         model_id="indobenchmark/indobert-base-p2",
-        train_file=data_dir / "train.tsv",
-        valid_file=data_dir / "valid.tsv",
-        test_file=data_dir / "test.tsv",
+        train_file=DATASET_PATHS["smsa_train"],
+        valid_file=DATASET_PATHS["smsa_valid"],
+        test_file=DATASET_PATHS["smsa"],
         save_dir=output_dir / save_name,
         results_dir=output_dir / results_name,
     )
@@ -102,7 +101,7 @@ def interactive_menu():
     print("\n  Select Evaluation Dataset:")
     print(f"  [1] SMSA (test.tsv) - {DATASET_PATHS['smsa']}")
     print(f"  [2] Tweets (INA_TweetsPPKM) - {DATASET_PATHS['tweets']}")
-    print("  [3] Default (finetune_3label/test.tsv)")
+    print("  [3] Default (datasets/test.tsv)")
 
     dataset_choice = input("\n  Enter choice (1/2/3): ").strip()
 
@@ -210,7 +209,7 @@ def main():
         type=str,
         choices=["smsa", "tweets", "default"],
         default="default",
-        help="Evaluation dataset: smsa (test.tsv), tweets (INA_TweetsPPKM), or default (finetune_3label/test.tsv)",
+        help="Evaluation dataset: smsa (test.tsv), tweets (INA_TweetsPPKM), or default (datasets/test.tsv)",
     )
     args = parser.parse_args()
 

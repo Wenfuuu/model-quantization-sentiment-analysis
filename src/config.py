@@ -65,5 +65,7 @@ QAT_EXPERIMENT_CONFIGS = {
 
 DATASET_PATHS = {
     "smsa": BASE_DIR / "datasets" / "test.tsv",
+    "smsa_train": BASE_DIR / "datasets" / "train.tsv",
+    "smsa_valid": BASE_DIR / "datasets" / "valid.tsv",
     "tweets": BASE_DIR / "datasets" / "INA_TweetsPPKM_Labeled_Pure.csv",
 }
