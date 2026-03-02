@@ -64,7 +64,16 @@ class EagerQATTrainer:
 
         dataset_dict = {}
         for split_name, split_path in splits.items():
-            df = pd.read_csv(split_path, sep='\t', header=None, names=['text', 'label'])
+            df_preview = pd.read_csv(split_path, sep='\t', nrows=1)
+            if 'Tweet' in df_preview.columns and 'sentiment' in df_preview.columns:
+                df = pd.read_csv(split_path, sep='\t', engine='python')
+                df = df.sample(frac=1/20, random_state=42).reset_index(drop=True)
+                id2label_map = {0: 'positive', 1: 'neutral', 2: 'negative'}
+                df['text'] = df['Tweet']
+                df['label'] = df['sentiment'].map(id2label_map)
+            else:
+                df = pd.read_csv(split_path, sep='\t', header=None, names=['text', 'label'])
+            df = df.dropna(subset=['text', 'label'])
             df['text'] = df['text'].apply(preprocess)
             df['label'] = df['label'].map(label2id)
             dataset_dict[split_name] = Dataset.from_pandas(df[['text', 'label']], preserve_index=False)
@@ -394,7 +403,7 @@ class EagerQATTrainer:
 
         return model_int4_onnx
 
-    def evaluate_onnx(self, onnx_model_path=None):
+    def evaluate_onnx(self, onnx_model_path=None, dataset_path=None):
         import onnxruntime as ort
 
         if onnx_model_path is None:
@@ -406,8 +415,11 @@ class EagerQATTrainer:
             else:
                 onnx_model_path = os.path.join(save_path, "model_qat_fp16.onnx")
 
+        test_file = dataset_path if dataset_path else str(self.config.test_file)
+
         print("=" * 70)
         print(f"Evaluating {self.quantization_type.upper()} ONNX Model")
+        print(f"Dataset: {test_file}")
         print("=" * 70)
 
         sess_options = ort.SessionOptions()
@@ -429,7 +441,7 @@ class EagerQATTrainer:
         print(f"Provider: {session.get_providers()}")
 
         tokenized_dataset = self._load_and_preprocess(
-            splits={'test': str(self.config.test_file)}
+            splits={'test': test_file}
         )
 
         num_samples = len(tokenized_dataset['test'])
@@ -438,6 +450,7 @@ class EagerQATTrainer:
         predictions = []
         true_labels = []
         inference_times = []
+        per_sample_latencies = []
         batch_size = self.config.batch_size
 
         print("\nRunning inference on test set...")
@@ -456,6 +469,10 @@ class EagerQATTrainer:
             )
             inference_time = time.time() - start_time
             inference_times.append(inference_time)
+
+            batch_actual_size = batch_end - i
+            per_sample_time = inference_time / batch_actual_size
+            per_sample_latencies.extend([per_sample_time] * batch_actual_size)
 
             logits = outputs[0]
             batch_predictions = np.argmax(logits, axis=1)
@@ -478,6 +495,14 @@ class EagerQATTrainer:
         avg_time_per_batch = np.mean(inference_times) * 1000
         samples_per_second = num_samples / total_time
 
+        latency_stats = {
+            'mean': float(np.mean(per_sample_latencies)),
+            'std': float(np.std(per_sample_latencies)),
+            'min': float(np.min(per_sample_latencies)),
+            'max': float(np.max(per_sample_latencies)),
+            'median': float(np.median(per_sample_latencies)),
+        }
+
         print("\n" + "=" * 70)
         print(f"{self.quantization_type.upper()} ONNX Model Results")
         print("=" * 70)
@@ -485,6 +510,7 @@ class EagerQATTrainer:
         print(f"  Precision: {precision:.4f}")
         print(f"  Recall:    {recall:.4f}")
         print(f"  F1 Score:  {f1:.4f}")
+        print(f"  Mean Latency: {latency_stats['mean']*1000:.2f} ms/sample")
         print("=" * 70)
         print(f"\nTotal time: {total_time:.2f}s")
         print(f"Avg per batch ({batch_size} samples): {avg_time_per_batch:.2f}ms")
@@ -549,6 +575,8 @@ class EagerQATTrainer:
                 'avg_time_per_batch_ms': float(avg_time_per_batch),
                 'samples_per_second': float(samples_per_second),
             },
+            'latencies': [float(x) for x in per_sample_latencies],
+            'latency_stats': latency_stats,
             'classification_report': report_dict,
         }
 

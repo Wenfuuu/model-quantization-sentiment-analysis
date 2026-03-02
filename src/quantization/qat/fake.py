@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 
 import numpy as np
 import torch
@@ -63,7 +64,16 @@ class FakeQATTrainer:
 
         dataset_dict = {}
         for split_name, split_path in splits.items():
-            df = pd.read_csv(split_path, sep='\t', header=None, names=['text', 'label'])
+            df_preview = pd.read_csv(split_path, sep='\t', nrows=1)
+            if 'Tweet' in df_preview.columns and 'sentiment' in df_preview.columns:
+                df = pd.read_csv(split_path, sep='\t', engine='python')
+                df = df.sample(frac=1/20, random_state=42).reset_index(drop=True)
+                id2label_map = {0: 'positive', 1: 'neutral', 2: 'negative'}
+                df['text'] = df['Tweet']
+                df['label'] = df['sentiment'].map(id2label_map)
+            else:
+                df = pd.read_csv(split_path, sep='\t', header=None, names=['text', 'label'])
+            df = df.dropna(subset=['text', 'label'])
             df['text'] = df['text'].apply(preprocess)
             df['label'] = df['label'].map(label2id)
             dataset_dict[split_name] = Dataset.from_pandas(df[['text', 'label']], preserve_index=False)
@@ -390,12 +400,15 @@ class FakeQATTrainer:
 
         return train_result
 
-    def evaluate(self, model_path=None):
+    def evaluate(self, model_path=None, dataset_path=None):
         if model_path is None:
             model_path = str(self.config.save_dir)
 
+        test_file = dataset_path if dataset_path else str(self.config.test_file)
+
         print("=" * 70)
         print(f"Evaluating {self.quantization_type.upper()} Fake QAT Model")
+        print(f"Dataset: {test_file}")
         print("=" * 70)
 
         tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -425,7 +438,7 @@ class FakeQATTrainer:
         print(f"Number of parameters: {model.num_parameters():,}")
 
         tokenized_dataset = self._load_and_preprocess(
-            splits={'test': str(self.config.test_file)}
+            splits={'test': test_file}
         )
 
         print(f"Test samples: {len(tokenized_dataset['test']):,}")
@@ -465,6 +478,36 @@ class FakeQATTrainer:
         predictions_output = trainer.predict(tokenized_dataset["test"])
         y_pred = predictions_output.predictions.argmax(-1)
         y_true = predictions_output.label_ids
+
+        print("\nMeasuring per-sample inference latency...")
+        device = next(model.parameters()).device
+        per_sample_latencies = []
+        batch_size = self.config.batch_size
+        num_samples = len(tokenized_dataset["test"])
+
+        with torch.no_grad():
+            for i in range(0, num_samples, batch_size):
+                batch_end = min(i + batch_size, num_samples)
+                batch = tokenized_dataset["test"][i:batch_end]
+                input_ids = torch.tensor(batch["input_ids"]).to(device)
+                attention_mask = torch.tensor(batch["attention_mask"]).to(device)
+
+                start_time = time.time()
+                model(input_ids=input_ids, attention_mask=attention_mask)
+                elapsed = time.time() - start_time
+
+                batch_actual_size = batch_end - i
+                per_sample_time = elapsed / batch_actual_size
+                per_sample_latencies.extend([per_sample_time] * batch_actual_size)
+
+        latency_stats = {
+            'mean': float(np.mean(per_sample_latencies)),
+            'std': float(np.std(per_sample_latencies)),
+            'min': float(np.min(per_sample_latencies)),
+            'max': float(np.max(per_sample_latencies)),
+            'median': float(np.median(per_sample_latencies)),
+        }
+        print(f"Mean Latency: {latency_stats['mean']*1000:.2f} ms/sample")
 
         label_names = [
             self.config.id2label[i].capitalize()
@@ -519,6 +562,8 @@ class FakeQATTrainer:
                     "model_type": self.quantization_type.upper(),
                     "method": "fake",
                     "overall_metrics": results,
+                    "latencies": [float(x) for x in per_sample_latencies],
+                    "latency_stats": latency_stats,
                     "classification_report": report_dict,
                 },
                 f,
