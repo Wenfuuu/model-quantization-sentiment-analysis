@@ -76,12 +76,12 @@ def interactive_menu():
     method_choice = input("\n  Enter choice (1/2/3): ").strip()
 
     print("\n  Select Quantization Type:")
-    print("  [1] INT8")
-    print("  [2] INT4")
-    print("  [3] All (INT8 + INT4)")
-    print("  [NOTE] FP16 QAT is retired — use PTQ-FP16 instead.")
+    print("  [1] FP16")
+    print("  [2] INT8")
+    print("  [3] INT4")
+    print("  [4] All (FP16 + INT8 + INT4)")
 
-    quant_choice = input("\n  Enter choice (1/2/3): ").strip()
+    quant_choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
     if method_choice == "1":
         methods = ["eager"]
@@ -91,11 +91,13 @@ def interactive_menu():
         methods = ["eager", "fake"]
 
     if quant_choice == "1":
-        quant_types = ["int8"]
+        quant_types = ["fp16"]
     elif quant_choice == "2":
+        quant_types = ["int8"]
+    elif quant_choice == "3":
         quant_types = ["int4"]
     else:
-        quant_types = ["int8", "int4"]
+        quant_types = ["fp16", "int8", "int4"]
 
     print("\n  Select Evaluation Dataset:")
     print(f"  [1] SMSA (test.tsv) - {DATASET_PATHS['smsa']}")
@@ -117,7 +119,7 @@ def interactive_menu():
         if pct_input:
             sample_frac = max(1, min(100, int(pct_input))) / 100.0
 
-    return methods, quant_types, dataset_path, sample_frac, sample_frac
+    return methods, quant_types, dataset_path, sample_frac
 
 
 def _load_evaluation_json(method, quant_type):

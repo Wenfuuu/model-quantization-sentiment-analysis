@@ -89,13 +89,6 @@ class EagerQATTrainer:
         return tokenized
 
     def train(self):
-        if self.quantization_type == "fp16":
-            raise NotImplementedError(
-                "FP16 QAT has been retired. The fbgemm backend used here applies "
-                "INT8 observers regardless of the 'fp16' label — there is no "
-                "FP16 QAT in PyTorch eager mode. Use PTQ-FP16 (model.half()) "
-                "for FP16 inference, or INT8 QAT for quantisation-aware training."
-            )
         set_seed(42)
         print("=" * 70)
         print(
