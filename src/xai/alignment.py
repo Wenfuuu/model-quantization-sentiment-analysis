@@ -108,7 +108,7 @@ def build_alignment(
         if subword_to_word[i] == UNALIGNED:
             warnings.warn(
                 f"Content subword '{content_subwords[i]}' at span "
-                f"({s_start}, {s_end}) was not contained in any word span.  "
+                f"({s_start}, {s_end}) was not contained in any word span.  ",
                 UserWarning, stacklevel=2,
             )
 
@@ -117,7 +117,7 @@ def build_alignment(
     for j, f in enumerate(fragmentation):
         if f == 0:
             warnings.warn(
-                f"Word '{words[j]}' at span {word_spans[j]} has no aligned "
+                f"Word '{words[j]}' at span {word_spans[j]} has no aligned ",
                 UserWarning, stacklevel=2,
             )
 
@@ -250,6 +250,7 @@ def project_subword_to_word(
         warnings.warn(
             f"subword_scores length ({len(subword_scores)}) does not match "
             f"alignment.n_subwords ({alignment.n_subwords}).  This may happen "
+            "when truncation occurs.",
             UserWarning, stacklevel=2,
         )
 
