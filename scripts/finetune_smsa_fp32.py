@@ -32,7 +32,7 @@ from src.utils import set_seed
 warnings.filterwarnings("ignore")
 
 BASE_DIR   = Path(__file__).parent.parent
-DATA_DIR   = BASE_DIR / "src" / "finetune_3label"
+DATA_DIR   = BASE_DIR / "datasets"
 _DEFAULT_SAVE_DIR = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"
 MODEL_ID   = "indobenchmark/indobert-base-p2"
 MAX_LENGTH = 128

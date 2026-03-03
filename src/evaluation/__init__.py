@@ -38,6 +38,11 @@ from .faithfulness import (
     save_faithfulness_results,
     load_faithfulness_results,
 )
+from .stress_test import (
+    run_edge_case_test,
+    run_noise_robustness_test,
+    run_calibration_stress_test,
+)
 
 __all__ = [
     "ModelEvaluator",
@@ -77,4 +82,8 @@ __all__ = [
     "compare_faithfulness",
     "save_faithfulness_results",
     "load_faithfulness_results",
+    # Stress test
+    "run_edge_case_test",
+    "run_noise_robustness_test",
+    "run_calibration_stress_test",
 ]

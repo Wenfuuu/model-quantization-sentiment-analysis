@@ -7,6 +7,7 @@ from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment
 from scripts.run_fake_ptq import interactive_menu as fake_ptq_menu, run_fake_ptq_experiment
 from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment
 from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu
+from scripts.run_stress_test import interactive_menu as stress_menu, run_stress_test_experiment
 from src.config import EXPERIMENT_CONFIGS
 from src.utils import print_section
 
@@ -64,19 +65,21 @@ def run_fake_ptq():
 
 
 def run_qat():
-    methods, quant_types = qat_menu()
+    methods, quant_types, dataset_path = qat_menu()
 
     total = len(methods) * len(quant_types)
     combos = [f"{m.upper()} {q.upper()}" for m in methods for q in quant_types]
 
     print("\n" + "=" * 80)
     print(f"STARTING QAT EXPERIMENTS - {total} COMBINATION(S) TO RUN")
+    if dataset_path:
+        print(f"Evaluation Dataset: {dataset_path}")
     print("=" * 80)
     for i, combo in enumerate(combos, 1):
         print(f"  [{i}/{total}] {combo}")
     print("=" * 80 + "\n")
 
-    run_qat_from_menu(methods, quant_types)
+    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path)
 
     print_section("ALL QAT EXPERIMENTS COMPLETED")
 
@@ -96,12 +99,27 @@ def run_xai():
     run_xai_experiment(experiment_key, precisions, num_samples, divergence_samples)
 
     print_section("XAI ANALYSIS COMPLETED")
-    print(f"Results saved to: outputs/{experiment_key}/xai/comparison/")
-    print("  - lime_comparison_sample_N.png      : LIME side-by-side across precisions")
-    print("  - shap_comparison_sample_N.png      : SHAP side-by-side across precisions")
-    print("  - ig_comparison_sample_N.png        : Integrated Gradients side-by-side across precisions")
-    print("  - occlusion_comparison_sample_N.png : Occlusion side-by-side across precisions")
-    print("  - prediction_summary.png            : Prediction correctness table")
+
+
+def run_stress():
+    selected_experiments, selected_tests = stress_menu()
+
+    total = len(selected_experiments)
+    print("\n" + "=" * 80)
+    print(f"STARTING STRESS TESTS - {total} EXPERIMENT(S)")
+    print("=" * 80)
+    for i, key in enumerate(selected_experiments, 1):
+        print(f"  [{i}/{total}] {key}")
+    print("=" * 80 + "\n")
+
+    for idx, version_key in enumerate(selected_experiments, 1):
+        print("\n" + "#" * 80)
+        print(f"# STRESS TEST [{idx}/{total}]: {version_key.upper()}")
+        print("#" * 80 + "\n")
+        run_stress_test_experiment(version_key, tests=selected_tests)
+        print(f"\n  Completed [{idx}/{total}]: {version_key}")
+
+    print_section("ALL STRESS TESTS COMPLETED")
 
 
 def main():
@@ -113,8 +131,9 @@ def main():
     print("  [1] PTQ (Post-Training Quantization)")
     print("  [2] QAT (Quantization-Aware Training)")
     print("  [3] XAI (Explainability Analysis)")
+    print("  [4] Stress Test (Robustness Analysis)")
 
-    choice = input("\n  Enter choice (1/2/3): ").strip()
+    choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
     if choice == "1":
         print("\n  Select PTQ Method:")
@@ -131,6 +150,8 @@ def main():
         run_qat()
     elif choice == "3":
         run_xai()
+    elif choice == "4":
+        run_stress()
     else:
         print("\n  Invalid choice.")
 
