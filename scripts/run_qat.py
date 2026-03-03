@@ -209,6 +209,13 @@ def main():
         default="default",
         help="Evaluation dataset: smsa (test.tsv), tweets (INA_TweetsPPKM), or default (datasets/test.tsv)",
     )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        choices=["smsa", "tweets", "default"],
+        default="default",
+        help="Evaluation dataset: smsa (test.tsv), tweets (INA_TweetsPPKM), or default (datasets/test.tsv)",
+    )
     args = parser.parse_args()
 
     methods = ["eager", "fake"] if args.method == "all" else [args.method]
