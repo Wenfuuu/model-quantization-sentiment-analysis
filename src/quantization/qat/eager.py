@@ -39,7 +39,7 @@ class EagerQATTrainer:
         if not isinstance(text, str):
             return ""
         text = text.lower()
-        text = re.sub(r'[^a-z\s]', '', text)
+        text = re.sub(r'[^a-z\s]', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
@@ -63,7 +63,8 @@ class EagerQATTrainer:
             df_preview = pd.read_csv(split_path, sep='\t', nrows=1)
             if 'Tweet' in df_preview.columns and 'sentiment' in df_preview.columns:
                 df = pd.read_csv(split_path, sep='\t', engine='python')
-                df = df.sample(frac=1/20, random_state=42).reset_index(drop=True)
+                if self.config.sample_frac < 1.0:
+                    df = df.sample(frac=self.config.sample_frac, random_state=42).reset_index(drop=True)
                 id2label_map = {0: 'positive', 1: 'neutral', 2: 'negative'}
                 df['text'] = df['Tweet']
                 df['label'] = df['sentiment'].map(id2label_map)
@@ -212,7 +213,10 @@ class EagerQATTrainer:
             label2id=self.config.label2id,
         )
         qat_state = model_qat.state_dict()
-        clean_model.load_state_dict(qat_state, strict=False)
+        missing_keys, unexpected_keys = clean_model.load_state_dict(qat_state, strict=False)
+        if missing_keys:
+            print(f"WARNING: {len(missing_keys)} missing keys not loaded: {missing_keys[:5]}")
+        print(f"Loaded {len(qat_state) - len(unexpected_keys)}/{len(qat_state)} keys, skipped {len(unexpected_keys)} QAT observer keys")
         clean_model.eval()
 
         ptq_model_path = os.path.join(save_path, f"model_{self.quantization_type}.pth")
