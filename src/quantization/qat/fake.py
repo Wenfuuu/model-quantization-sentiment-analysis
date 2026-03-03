@@ -38,7 +38,7 @@ class FakeQATTrainer:
         if not isinstance(text, str):
             return ""
         text = text.lower()
-        text = re.sub(r'[^a-z\s]', '', text)
+        text = re.sub(r'[^a-z\s]', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
@@ -62,7 +62,8 @@ class FakeQATTrainer:
             df_preview = pd.read_csv(split_path, sep='\t', nrows=1)
             if 'Tweet' in df_preview.columns and 'sentiment' in df_preview.columns:
                 df = pd.read_csv(split_path, sep='\t', engine='python')
-                df = df.sample(frac=1/20, random_state=42).reset_index(drop=True)
+                if self.config.sample_frac < 1.0:
+                    df = df.sample(frac=self.config.sample_frac, random_state=42).reset_index(drop=True)
                 id2label_map = {0: 'positive', 1: 'neutral', 2: 'negative'}
                 df['text'] = df['Tweet']
                 df['label'] = df['sentiment'].map(id2label_map)
