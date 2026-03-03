@@ -27,12 +27,13 @@ sys.path.insert(0, str(_project_root / "datasets"))
 from src.config import LABELS, DEVICE
 from src.models import ModelManager
 from src.models.base import BaseModel
-from src.quantization.ptq import PTQQuantizer 
+from src.quantization.ptq import PTQQuantizer
 from src.xai import LIMEExplainer, SHAPExplainer
 from src.xai.integrated_gradients import IntegratedGradientsExplainer
 from src.data import load_smsa_dataset
 from src.evaluation.evaluator import ModelEvaluator
 from src.evaluation.metrics import statistical_test
+from src.utils import set_seed
 from src.evaluation.explanation_drift import (
     aggregate_explanation_drift,
     wilcoxon_drift_test,
@@ -75,6 +76,7 @@ MODEL_PATH  = Path(__file__).parent.parent / "finetuned-model" / "indobert-fp32-
 
 XAI_SAMPLE_LIMIT = 50
 SEED = 42
+set_seed(SEED)
 
 def _save_json(data: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -463,7 +465,7 @@ def _plot_probe_attribution_shift(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Attribution comparison: FP32 vs PTQ (INT8/FP16/INT4) vs QAT (INT8/FP16)")
+        description="Attribution comparison: FP32 vs PTQ (INT8/FP16/INT4) vs QAT (INT8)")
     parser.add_argument("--probes-only", action="store_true",
                         help="Only run linguistic probe analysis (skip full eval + XAI)")
     parser.add_argument("--no-ig", action="store_true",
@@ -478,7 +480,6 @@ def parse_args():
                         help="Path to QAT-FP16 checkpoint directory")
     return parser.parse_args()
 
-
 def _check_model_weights(model_path: str) -> None:
     p = Path(model_path)
     weight_files = (
@@ -489,7 +490,6 @@ def _check_model_weights(model_path: str) -> None:
     if weight_files:
         return
     sys.exit(1)
-
 
 def main():
     args = parse_args()
@@ -649,7 +649,6 @@ def main():
     print("\n" + "=" * 70)
     print(f"Results saved to: {OUTPUT_ROOT}")
     print("=" * 70)
-
 
 if __name__ == "__main__":
     main()

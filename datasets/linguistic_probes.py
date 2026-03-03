@@ -3,7 +3,6 @@ from dataclasses import dataclass, field, asdict
 import json
 from pathlib import Path
 
-
 @dataclass
 class LinguisticProbe:
     text: str

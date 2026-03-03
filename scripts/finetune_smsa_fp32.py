@@ -25,22 +25,15 @@ from transformers import (
 from sklearn.metrics import f1_score, accuracy_score, classification_report
 from tqdm import tqdm
 
-try:
-    from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
-    _stopword_remover = StopWordRemoverFactory().create_stop_word_remover()
-    SASTRAWI_AVAILABLE = True
-except ImportError:
-    SASTRAWI_AVAILABLE = False
-    warnings.warn("Sastrawi not installed — stopword removal will be skipped.")
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.config import DEVICE
+from src.utils import set_seed
 
 warnings.filterwarnings("ignore")
 
 BASE_DIR   = Path(__file__).parent.parent
 DATA_DIR   = BASE_DIR / "src" / "finetune_3label"
-SAVE_DIR   = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"
+_DEFAULT_SAVE_DIR = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"
 MODEL_ID   = "indobenchmark/indobert-base-p2"
 MAX_LENGTH = 128
 
@@ -52,8 +45,6 @@ def preprocess_text(text: str) -> str:
     text = text.lower()
     text = re.sub(r"[^a-z\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    if SASTRAWI_AVAILABLE:
-        text = _stopword_remover.remove(text)
     return text
 
 class SMSADataset(Dataset):
@@ -121,6 +112,9 @@ def run_epoch(model, loader, optimizer, scheduler, device, train: bool) -> tuple
 
 
 def main(args):
+    SAVE_DIR = Path(args.save_dir) if args.save_dir else _DEFAULT_SAVE_DIR
+
+    set_seed(args.seed)
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     history_path = SAVE_DIR / "training_history.json"
 
@@ -131,6 +125,7 @@ def main(args):
     print(f"  Epochs:  {args.epochs}")
     print(f"  LR:      {args.lr}")
     print(f"  Batch:   {args.batch_size}")
+    print(f"  Seed:    {args.seed}")
     print(f"  Save to: {SAVE_DIR}")
     print("=" * 60)
 
@@ -214,12 +209,16 @@ def main(args):
     results = {
         "model_id": MODEL_ID,
         "save_dir": str(SAVE_DIR),
+        "seed": args.seed,
         "hyperparameters": {
             "epochs":     args.epochs,
             "lr":         args.lr,
             "batch_size": args.batch_size,
             "max_length": MAX_LENGTH,
             "device":     str(DEVICE),
+            "weight_decay": 0.01,
+            "warmup_fraction": 0.1,
+            "grad_clip_norm": 1.0,
         },
         "train_sizes": {
             "train": len(train_set),
@@ -238,10 +237,22 @@ def main(args):
         json.dump(history, f, indent=2)
 
 def parse_args():
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(
+        description="Fine-tune IndoBERT on SMSA (3-label). "
+                    "Designed to be called once per seed, either directly "
+                    "or via finetune_multi_seed.py."
+    )
     p.add_argument("--epochs",     type=int,   default=3)
     p.add_argument("--lr",         type=float, default=2e-5)
     p.add_argument("--batch-size", type=int,   default=16)
+    p.add_argument("--seed",       type=int,   default=42)
+    p.add_argument(
+        "--save-dir",
+        type=str,
+        default=None,
+        help="Override checkpoint save directory. "
+             "Defaults to finetuned-model/indobert-fp32-smsa-3label-finetuned.",
+    )
     return p.parse_args()
 
 if __name__ == "__main__":
