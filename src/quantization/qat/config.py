@@ -44,6 +44,7 @@ class FinetuneQATConfig:
     learning_rate: float = 2e-5
     weight_decay: float = 0.01
     max_length: int = 128
+    sample_frac: float = 1.0
     label2id: Dict[str, int] = field(default_factory=lambda: {
         'positive': 0, 'neutral': 1, 'negative': 2
     })

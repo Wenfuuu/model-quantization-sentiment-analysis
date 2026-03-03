@@ -149,7 +149,7 @@ class SmoothGradExplainer:
             text,
             return_tensors="pt",
             truncation=True,
-            max_length=512,
+            max_length=128,
         )
         input_ids      = encoding["input_ids"].to(self.device)
         attention_mask = encoding["attention_mask"].to(self.device)

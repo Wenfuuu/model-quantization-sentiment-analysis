@@ -1,6 +1,16 @@
+import re
 import time
 import torch
 from src.config import LABELS, DEVICE
+
+
+def preprocess_text(text):
+    if not isinstance(text, str):
+        return ""
+    text = text.lower()
+    text = re.sub(r'[^a-z\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
 class BaseModel:
@@ -11,7 +21,8 @@ class BaseModel:
         self.model.eval()
 
     def predict(self, text, use_fp16=False):
-        inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+        text = preprocess_text(text)
+        inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=128)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         if use_fp16:
