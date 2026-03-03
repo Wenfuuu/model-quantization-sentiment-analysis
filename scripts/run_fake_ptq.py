@@ -17,11 +17,12 @@ from src.utils import print_section
 from src.models.base import BaseModel
 from src.evaluation.metrics import statistical_test, confidence_comparison
 from src.config import DEVICE
+from src.utils import set_seed
 
 warnings.filterwarnings('ignore')
 
-
 def run_fake_ptq_experiment(version_key, num_runs_override=None):
+    set_seed(42)
     config = EXPERIMENT_CONFIGS[version_key]
     output_dir = Path(config["output_dir"]) / "fake_ptq"
     output_dir.mkdir(parents=True, exist_ok=True)

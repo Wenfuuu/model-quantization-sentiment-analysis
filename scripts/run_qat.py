@@ -8,6 +8,7 @@ from src.config import BASE_DIR
 from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
 from src.quantization.qat.fake import FakeQATTrainer
+from src.utils import set_seed
 
 
 def get_default_config(method, quant_type):
@@ -72,11 +73,11 @@ def interactive_menu():
 
     print("\n  Select Quantization Type:")
     print("  [1] INT8")
-    print("  [2] FP16")
-    print("  [3] INT4")
-    print("  [4] All")
+    print("  [2] INT4")
+    print("  [3] All (INT8 + INT4)")
+    print("  [NOTE] FP16 QAT is retired — use PTQ-FP16 instead.")
 
-    quant_choice = input("\n  Enter choice (1/2/3/4): ").strip()
+    quant_choice = input("\n  Enter choice (1/2/3): ").strip()
 
     if method_choice == "1":
         methods = ["eager"]
@@ -88,16 +89,15 @@ def interactive_menu():
     if quant_choice == "1":
         quant_types = ["int8"]
     elif quant_choice == "2":
-        quant_types = ["fp16"]
-    elif quant_choice == "3":
         quant_types = ["int4"]
     else:
-        quant_types = ["int8", "fp16", "int4"]
+        quant_types = ["int8", "int4"]
 
     return methods, quant_types
 
 
 def run_qat_from_menu(methods, quant_types):
+    set_seed(42)
     total = len(methods) * len(quant_types)
     current = 0
 
@@ -132,14 +132,14 @@ def main():
     parser.add_argument(
         "--quant-type",
         type=str,
-        choices=["int8", "fp16", "int4", "all"],
+        choices=["int8", "int4", "all"],
         default="all",
-        help="Quantization type: int8, fp16, int4, or all",
+        help="Quantization type: int8, int4, or all (FP16 QAT is retired)",
     )
     args = parser.parse_args()
 
     methods = ["eager", "fake"] if args.method == "all" else [args.method]
-    quant_types = ["int8", "fp16", "int4"] if args.quant_type == "all" else [args.quant_type]
+    quant_types = ["int8", "int4"] if args.quant_type == "all" else [args.quant_type]
 
     run_qat_from_menu(methods, quant_types)
 

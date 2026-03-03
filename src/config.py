@@ -11,6 +11,15 @@ LABELS = {0: "POSITIVE", 1: "NEUTRAL", 2: "NEGATIVE"}
 QUANTIZATION_DTYPE = torch.qint8
 TARGET_LAYERS = {torch.nn.Linear}
 
+TRAINING_SEEDS = [42, 123, 7]
+
+SEEDED_MODEL_DIRS = {
+    seed: BASE_DIR / "finetuned-model" / f"indobert-fp32-smsa-3label-seed{seed}"
+    for seed in TRAINING_SEEDS
+}
+
+LEGACY_MODEL_DIR = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"
+
 EXPERIMENT_CONFIGS = {
     "original_smsa": {
         "model_id": "indobenchmark/indobert-base-p2",

@@ -19,7 +19,6 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
 )
-from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 
 import matplotlib
 matplotlib.use("Agg")
@@ -27,6 +26,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .config import FinetuneQATConfig
+from src.utils import set_seed
 
 
 class EagerQATTrainer:
@@ -34,8 +34,6 @@ class EagerQATTrainer:
         self.config = config
         self.quantization_type = quantization_type
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_id)
-        stopword_factory = StopWordRemoverFactory()
-        self.stopwords = stopword_factory.get_stop_words()
 
     def _preprocess_text(self, text):
         if not isinstance(text, str):
@@ -43,9 +41,7 @@ class EagerQATTrainer:
         text = text.lower()
         text = re.sub(r'[^a-z\s]', '', text)
         text = re.sub(r'\s+', ' ', text).strip()
-        words = text.split()
-        words = [w for w in words if w not in self.stopwords]
-        return ' '.join(words)
+        return text
 
     def _load_and_preprocess(self, splits=None):
         if splits is None:
@@ -89,6 +85,14 @@ class EagerQATTrainer:
         return tokenized
 
     def train(self):
+        if self.quantization_type == "fp16":
+            raise NotImplementedError(
+                "FP16 QAT has been retired. The fbgemm backend used here applies "
+                "INT8 observers regardless of the 'fp16' label — there is no "
+                "FP16 QAT in PyTorch eager mode. Use PTQ-FP16 (model.half()) "
+                "for FP16 inference, or INT8 QAT for quantisation-aware training."
+            )
+        set_seed(42)
         print("=" * 70)
         print(
             f"{self.quantization_type.upper()} Eager QAT Training"

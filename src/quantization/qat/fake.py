@@ -18,7 +18,6 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
 )
-from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 
 import matplotlib
 matplotlib.use("Agg")
@@ -26,15 +25,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .config import FinetuneQATConfig
-
+from src.utils import set_seed
 
 class FakeQATTrainer:
     def __init__(self, config: FinetuneQATConfig, quantization_type: str = "int8"):
         self.config = config
         self.quantization_type = quantization_type
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_id)
-        stopword_factory = StopWordRemoverFactory()
-        self.stopwords = stopword_factory.get_stop_words()
 
     def _preprocess_text(self, text):
         if not isinstance(text, str):
@@ -42,9 +39,7 @@ class FakeQATTrainer:
         text = text.lower()
         text = re.sub(r'[^a-z\s]', '', text)
         text = re.sub(r'\s+', ' ', text).strip()
-        words = text.split()
-        words = [w for w in words if w not in self.stopwords]
-        return ' '.join(words)
+        return text
 
     def _load_and_preprocess(self, splits=None):
         if splits is None:
@@ -108,13 +103,21 @@ class FakeQATTrainer:
         }
 
     def train(self):
+        if self.quantization_type == "fp16":
+            raise NotImplementedError(
+                "FP16 QAT has been retired. PyTorch's fbgemm qconfig applies "
+                "INT8 quantization regardless of the 'fp16' label — FP16 QAT "
+                "is not a meaningful operation in this backend. "
+                "Use PTQ-FP16 (model.half()) for FP16 inference instead."
+            )
         if self.quantization_type == "int8":
             return self._train_int8()
         elif self.quantization_type == "int4":
             return self._train_int4()
-        return self._train_fp16()
+        raise ValueError(f"Unknown quantization_type: {self.quantization_type!r}")
 
     def _train_int8(self):
+        set_seed(42)
         print("=" * 70)
         print("INT8 Fake QAT Training - SMSA Sentiment Analysis")
         print("=" * 70)
@@ -284,6 +287,7 @@ class FakeQATTrainer:
         from transformers import BitsAndBytesConfig
         from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
 
+        set_seed(42)
         print("=" * 70)
         print("INT4 Fake QAT Training - SMSA Sentiment Analysis")
         print("=" * 70)

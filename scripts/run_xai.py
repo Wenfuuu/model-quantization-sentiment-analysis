@@ -16,9 +16,11 @@ from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
 from src.models.base import BaseModel
 from src.xai import LIMEExplainer, SHAPExplainer, IntegratedGradientsExplainer, OcclusionExplainer
-from src.utils import print_section
+from src.utils import print_section, set_seed
 
 warnings.filterwarnings('ignore')
+
+set_seed(42)
 
 
 def select_samples(dataset_samples, num_samples=3):

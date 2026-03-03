@@ -28,6 +28,16 @@ from .per_class_analysis import (
     mcnemar_test,
     mcnemar_per_class,
 )
+from .faithfulness import (
+    FaithfulnessAtK,
+    FaithfulnessResult,
+    FaithfulnessEvaluator,
+    evaluate_faithfulness_batch,
+    aggregate_faithfulness,
+    compare_faithfulness,
+    save_faithfulness_results,
+    load_faithfulness_results,
+)
 
 __all__ = [
     "ModelEvaluator",
@@ -58,4 +68,13 @@ __all__ = [
     "plot_per_class_f1_comparison",
     "mcnemar_test",
     "mcnemar_per_class",
+    # Faithfulness (ERASER: sufficiency + comprehensiveness)
+    "FaithfulnessAtK",
+    "FaithfulnessResult",
+    "FaithfulnessEvaluator",
+    "evaluate_faithfulness_batch",
+    "aggregate_faithfulness",
+    "compare_faithfulness",
+    "save_faithfulness_results",
+    "load_faithfulness_results",
 ]
