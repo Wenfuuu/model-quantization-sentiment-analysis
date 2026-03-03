@@ -12,7 +12,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
-from datasets import load_dataset
+from datasets import Dataset, DatasetDict, disable_caching
 from sklearn.metrics import (
     accuracy_score,
     precision_recall_fscore_support,
@@ -44,6 +44,8 @@ class EagerQATTrainer:
         return text
 
     def _load_and_preprocess(self, splits=None):
+        import pandas as pd
+        disable_caching()
         if splits is None:
             splits = {
                 'train': str(self.config.train_file),
@@ -51,37 +53,38 @@ class EagerQATTrainer:
                 'test': str(self.config.test_file),
             }
 
-        dataset = load_dataset(
-            'csv',
-            data_files=splits,
-            delimiter='\t',
-            column_names=['text', 'label'],
-        )
-
         label2id = self.config.label2id
-
-        def map_labels(df):
-            df['label'] = [label2id[label] for label in df['label']]
-            return df
-
-        dataset = dataset.map(map_labels, batched=True)
-
         preprocess = self._preprocess_text
         tokenizer = self.tokenizer
         max_length = self.config.max_length
 
-        def preprocess_and_tokenize(batch):
-            preprocessed = [preprocess(text) for text in batch["text"]]
+        dataset_dict = {}
+        for split_name, split_path in splits.items():
+            df_preview = pd.read_csv(split_path, sep='\t', nrows=1)
+            if 'Tweet' in df_preview.columns and 'sentiment' in df_preview.columns:
+                df = pd.read_csv(split_path, sep='\t', engine='python')
+                df = df.sample(frac=1/20, random_state=42).reset_index(drop=True)
+                id2label_map = {0: 'positive', 1: 'neutral', 2: 'negative'}
+                df['text'] = df['Tweet']
+                df['label'] = df['sentiment'].map(id2label_map)
+            else:
+                df = pd.read_csv(split_path, sep='\t', header=None, names=['text', 'label'])
+            df = df.dropna(subset=['text', 'label'])
+            df['text'] = df['text'].apply(preprocess)
+            df['label'] = df['label'].map(label2id)
+            dataset_dict[split_name] = Dataset.from_pandas(df[['text', 'label']], preserve_index=False)
+
+        dataset = DatasetDict(dataset_dict)
+
+        def tokenize_fn(batch):
             return tokenizer(
-                preprocessed,
+                batch['text'],
                 truncation=True,
-                padding="max_length",
+                padding='max_length',
                 max_length=max_length,
             )
 
-        tokenized = dataset.map(
-            preprocess_and_tokenize, batched=True, remove_columns=['text']
-        )
+        tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=['text'])
         return tokenized
 
     def train(self):
@@ -117,7 +120,7 @@ class EagerQATTrainer:
 
         model.train()
         model.qconfig = torch.quantization.QConfig(
-            activation=torch.quantization.fake_quantize.default_fake_quant,
+            activation=torch.quantization.default_fake_quant,
             weight=torch.quantization.default_weight_fake_quant,
         )
 
@@ -146,6 +149,7 @@ class EagerQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
+            overwrite_output_dir=True,
             learning_rate=self.config.learning_rate,
             per_device_train_batch_size=self.config.batch_size,
             per_device_eval_batch_size=self.config.batch_size,
@@ -159,6 +163,8 @@ class EagerQATTrainer:
             logging_steps=50,
             report_to="none",
             fp16=False,
+            no_cuda=True,
+            save_safetensors=False,
             push_to_hub=False,
         )
 
@@ -174,7 +180,7 @@ class EagerQATTrainer:
             train_dataset=tokenized_dataset['train'],
             eval_dataset=tokenized_dataset['validation'],
             compute_metrics=compute_metrics,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
 
         print("\nStarting QAT training...")
@@ -198,6 +204,25 @@ class EagerQATTrainer:
             os.path.getsize(os.path.join(save_path, "model_qat.pth")) / (1024 * 1024)
         )
         print(f"QAT model saved to: {save_path} ({qat_size:.2f} MB)")
+
+        clean_model = AutoModelForSequenceClassification.from_pretrained(
+            self.config.model_id,
+            num_labels=self.config.num_labels,
+            id2label=self.config.id2label,
+            label2id=self.config.label2id,
+        )
+        qat_state = model_qat.state_dict()
+        clean_model.load_state_dict(qat_state, strict=False)
+        clean_model.eval()
+
+        ptq_model_path = os.path.join(save_path, f"model_{self.quantization_type}.pth")
+        torch.save(clean_model.state_dict(), ptq_model_path)
+        clean_model.save_pretrained(os.path.join(save_path, "hf_model"))
+        self.tokenizer.save_pretrained(os.path.join(save_path, "hf_model"))
+
+        ptq_size = os.path.getsize(ptq_model_path) / (1024 * 1024)
+        print(f"PTQ-compatible model saved: {ptq_model_path} ({ptq_size:.2f} MB)")
+        print(f"HuggingFace model saved: {os.path.join(save_path, 'hf_model')}")
 
         return train_result
 
@@ -304,6 +329,7 @@ class EagerQATTrainer:
 
     def _quantize_onnx_fp16(self, model_fp32_onnx):
         import onnx
+        from onnx import numpy_helper, TensorProto
         from onnxconverter_common import float16
 
         model_fp16_onnx = model_fp32_onnx.replace(".onnx", "_fp16.onnx")
@@ -314,8 +340,38 @@ class EagerQATTrainer:
 
         onnx_model = onnx.load(model_fp32_onnx)
         onnx_model_fp16 = float16.convert_float_to_float16(
-            onnx_model, keep_io_types=True
+            onnx_model,
+            keep_io_types=False,
         )
+
+        for initializer in onnx_model_fp16.graph.initializer:
+            if initializer.data_type == TensorProto.FLOAT:
+                data = numpy_helper.to_array(initializer).astype(np.float16)
+                new_init = numpy_helper.from_array(data, initializer.name)
+                initializer.CopyFrom(new_init)
+
+        for node in onnx_model_fp16.graph.node:
+            for attr in node.attribute:
+                if attr.type == onnx.AttributeProto.TENSOR and attr.t.data_type == TensorProto.FLOAT:
+                    data = numpy_helper.to_array(attr.t).astype(np.float16)
+                    new_tensor = numpy_helper.from_array(data)
+                    attr.t.CopyFrom(new_tensor)
+            if node.op_type == "Cast":
+                for attr in node.attribute:
+                    if attr.name == "to" and attr.i == TensorProto.FLOAT:
+                        attr.i = TensorProto.FLOAT16
+
+        for graph_input in onnx_model_fp16.graph.input:
+            if graph_input.type.tensor_type.elem_type == TensorProto.FLOAT:
+                graph_input.type.tensor_type.elem_type = TensorProto.FLOAT16
+
+        for graph_output in onnx_model_fp16.graph.output:
+            if graph_output.type.tensor_type.elem_type == TensorProto.FLOAT:
+                graph_output.type.tensor_type.elem_type = TensorProto.FLOAT16
+
+        while len(onnx_model_fp16.graph.value_info) > 0:
+            onnx_model_fp16.graph.value_info.pop()
+
         onnx.save(onnx_model_fp16, model_fp16_onnx)
 
         fp32_size = os.path.getsize(model_fp32_onnx) / (1024 * 1024)
@@ -330,7 +386,7 @@ class EagerQATTrainer:
 
     def _quantize_onnx_int4(self, model_fp32_onnx):
         import onnx
-        from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer
+        from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
 
         model_int4_onnx = model_fp32_onnx.replace(".onnx", "_int4.onnx")
 
@@ -339,9 +395,9 @@ class EagerQATTrainer:
         print("=" * 70)
 
         onnx_model = onnx.load(model_fp32_onnx)
-        quant = MatMul4BitsQuantizer(onnx_model, block_size=128, is_symmetric=True)
+        quant = MatMulNBitsQuantizer(onnx_model, block_size=128, is_symmetric=True, bits=4)
         quant.process()
-        quant.model.save(model_int4_onnx)
+        onnx.save(quant.model.model, model_int4_onnx)
 
         fp32_size = os.path.getsize(model_fp32_onnx) / (1024 * 1024)
         int4_size = os.path.getsize(model_int4_onnx) / (1024 * 1024)
@@ -353,7 +409,7 @@ class EagerQATTrainer:
 
         return model_int4_onnx
 
-    def evaluate_onnx(self, onnx_model_path=None):
+    def evaluate_onnx(self, onnx_model_path=None, dataset_path=None):
         import onnxruntime as ort
 
         if onnx_model_path is None:
@@ -365,14 +421,22 @@ class EagerQATTrainer:
             else:
                 onnx_model_path = os.path.join(save_path, "model_qat_fp16.onnx")
 
+        test_file = dataset_path if dataset_path else str(self.config.test_file)
+
         print("=" * 70)
         print(f"Evaluating {self.quantization_type.upper()} ONNX Model")
+        print(f"Dataset: {test_file}")
         print("=" * 70)
 
         sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = (
-            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        )
+        if self.quantization_type == "fp16":
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+            )
+        else:
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            )
 
         session = ort.InferenceSession(
             onnx_model_path,
@@ -383,7 +447,7 @@ class EagerQATTrainer:
         print(f"Provider: {session.get_providers()}")
 
         tokenized_dataset = self._load_and_preprocess(
-            splits={'test': str(self.config.test_file)}
+            splits={'test': test_file}
         )
 
         num_samples = len(tokenized_dataset['test'])
@@ -392,6 +456,7 @@ class EagerQATTrainer:
         predictions = []
         true_labels = []
         inference_times = []
+        per_sample_latencies = []
         batch_size = self.config.batch_size
 
         print("\nRunning inference on test set...")
@@ -410,6 +475,10 @@ class EagerQATTrainer:
             )
             inference_time = time.time() - start_time
             inference_times.append(inference_time)
+
+            batch_actual_size = batch_end - i
+            per_sample_time = inference_time / batch_actual_size
+            per_sample_latencies.extend([per_sample_time] * batch_actual_size)
 
             logits = outputs[0]
             batch_predictions = np.argmax(logits, axis=1)
@@ -432,6 +501,14 @@ class EagerQATTrainer:
         avg_time_per_batch = np.mean(inference_times) * 1000
         samples_per_second = num_samples / total_time
 
+        latency_stats = {
+            'mean': float(np.mean(per_sample_latencies)),
+            'std': float(np.std(per_sample_latencies)),
+            'min': float(np.min(per_sample_latencies)),
+            'max': float(np.max(per_sample_latencies)),
+            'median': float(np.median(per_sample_latencies)),
+        }
+
         print("\n" + "=" * 70)
         print(f"{self.quantization_type.upper()} ONNX Model Results")
         print("=" * 70)
@@ -439,6 +516,7 @@ class EagerQATTrainer:
         print(f"  Precision: {precision:.4f}")
         print(f"  Recall:    {recall:.4f}")
         print(f"  F1 Score:  {f1:.4f}")
+        print(f"  Mean Latency: {latency_stats['mean']*1000:.2f} ms/sample")
         print("=" * 70)
         print(f"\nTotal time: {total_time:.2f}s")
         print(f"Avg per batch ({batch_size} samples): {avg_time_per_batch:.2f}ms")
@@ -503,6 +581,8 @@ class EagerQATTrainer:
                 'avg_time_per_batch_ms': float(avg_time_per_batch),
                 'samples_per_second': float(samples_per_second),
             },
+            'latencies': [float(x) for x in per_sample_latencies],
+            'latency_stats': latency_stats,
             'classification_report': report_dict,
         }
 

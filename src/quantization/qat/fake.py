@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 
 import numpy as np
 import torch
@@ -11,7 +12,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
-from datasets import load_dataset
+from datasets import Dataset, DatasetDict, disable_caching
 from sklearn.metrics import (
     accuracy_score,
     precision_recall_fscore_support,
@@ -42,6 +43,8 @@ class FakeQATTrainer:
         return text
 
     def _load_and_preprocess(self, splits=None):
+        import pandas as pd
+        disable_caching()
         if splits is None:
             splits = {
                 'train': str(self.config.train_file),
@@ -49,43 +52,38 @@ class FakeQATTrainer:
                 'test': str(self.config.test_file),
             }
 
-        dataset = load_dataset(
-            'csv',
-            data_files=splits,
-            delimiter='\t',
-            column_names=['text', 'label'],
-        )
-
         label2id = self.config.label2id
-
-        def map_labels(df):
-            df['label'] = [label2id[label] for label in df['label']]
-            return df
-
-        dataset = dataset.map(map_labels, batched=True)
-
         preprocess = self._preprocess_text
-
-        def preprocess_dataset(examples):
-            examples['text'] = [preprocess(text) for text in examples['text']]
-            return examples
-
-        dataset = dataset.map(preprocess_dataset, batched=True)
-
         tokenizer = self.tokenizer
         max_length = self.config.max_length
 
+        dataset_dict = {}
+        for split_name, split_path in splits.items():
+            df_preview = pd.read_csv(split_path, sep='\t', nrows=1)
+            if 'Tweet' in df_preview.columns and 'sentiment' in df_preview.columns:
+                df = pd.read_csv(split_path, sep='\t', engine='python')
+                df = df.sample(frac=1/20, random_state=42).reset_index(drop=True)
+                id2label_map = {0: 'positive', 1: 'neutral', 2: 'negative'}
+                df['text'] = df['Tweet']
+                df['label'] = df['sentiment'].map(id2label_map)
+            else:
+                df = pd.read_csv(split_path, sep='\t', header=None, names=['text', 'label'])
+            df = df.dropna(subset=['text', 'label'])
+            df['text'] = df['text'].apply(preprocess)
+            df['label'] = df['label'].map(label2id)
+            dataset_dict[split_name] = Dataset.from_pandas(df[['text', 'label']], preserve_index=False)
+
+        dataset = DatasetDict(dataset_dict)
+
         def tokenize_fn(batch):
             return tokenizer(
-                batch["text"],
+                batch['text'],
                 truncation=True,
-                padding="max_length",
+                padding='max_length',
                 max_length=max_length,
             )
 
-        tokenized = dataset.map(
-            tokenize_fn, batched=True, remove_columns=['text']
-        )
+        tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=['text'])
         return tokenized
 
     def _compute_metrics(self, eval_pred):
@@ -151,6 +149,7 @@ class FakeQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
+            overwrite_output_dir=True,
             learning_rate=self.config.learning_rate,
             per_device_train_batch_size=self.config.batch_size,
             per_device_eval_batch_size=self.config.batch_size,
@@ -164,6 +163,7 @@ class FakeQATTrainer:
             logging_steps=100,
             report_to="none",
             fp16=False,
+            no_cuda=True,
             push_to_hub=False,
         )
 
@@ -179,7 +179,7 @@ class FakeQATTrainer:
             train_dataset=tokenized_dataset['train'],
             eval_dataset=tokenized_dataset['validation'],
             compute_metrics=self._compute_metrics,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
 
         print("\nStarting INT8 fake QAT training...")
@@ -200,7 +200,11 @@ class FakeQATTrainer:
         trainer.save_model(save_path)
         self.tokenizer.save_pretrained(save_path)
 
+        ptq_model_path = os.path.join(save_path, "model_int8.pth")
+        torch.save(model.state_dict(), ptq_model_path)
+        ptq_size = os.path.getsize(ptq_model_path) / (1024 * 1024)
         print(f"Model saved to: {save_path}")
+        print(f"PTQ-compatible model saved: {ptq_model_path} ({ptq_size:.2f} MB)")
 
         return train_result
 
@@ -229,6 +233,7 @@ class FakeQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
+            overwrite_output_dir=True,
             learning_rate=self.config.learning_rate,
             per_device_train_batch_size=self.config.batch_size,
             per_device_eval_batch_size=self.config.batch_size,
@@ -241,7 +246,8 @@ class FakeQATTrainer:
             logging_dir=f"{output_dir}/logs",
             logging_steps=100,
             report_to="none",
-            fp16=True,
+            fp16=False,
+            no_cuda=True,
             push_to_hub=False,
         )
 
@@ -257,7 +263,7 @@ class FakeQATTrainer:
             train_dataset=tokenized_dataset['train'],
             eval_dataset=tokenized_dataset['validation'],
             compute_metrics=self._compute_metrics,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
 
         print("\nStarting FP16 mixed precision training...")
@@ -279,7 +285,11 @@ class FakeQATTrainer:
         trainer.save_model(save_path)
         self.tokenizer.save_pretrained(save_path)
 
+        ptq_model_path = os.path.join(save_path, "model_fp16.pth")
+        torch.save(model.state_dict(), ptq_model_path)
+        ptq_size = os.path.getsize(ptq_model_path) / (1024 * 1024)
         print(f"Model saved to: {save_path}")
+        print(f"PTQ-compatible model saved: {ptq_model_path} ({ptq_size:.2f} MB)")
 
         return train_result
 
@@ -338,6 +348,7 @@ class FakeQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
+            overwrite_output_dir=True,
             learning_rate=2e-4,
             per_device_train_batch_size=8,
             per_device_eval_batch_size=8,
@@ -350,7 +361,8 @@ class FakeQATTrainer:
             logging_dir=f"{output_dir}/logs",
             logging_steps=100,
             report_to="none",
-            fp16=True,
+            fp16=False,
+            no_cuda=True,
             gradient_checkpointing=True,
             optim="paged_adamw_8bit",
             push_to_hub=False,
@@ -368,7 +380,7 @@ class FakeQATTrainer:
             train_dataset=tokenized_dataset['train'],
             eval_dataset=tokenized_dataset['validation'],
             compute_metrics=self._compute_metrics,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
 
         print("\nStarting INT4 fake QAT training...")
@@ -391,15 +403,19 @@ class FakeQATTrainer:
         self.tokenizer.save_pretrained(save_path)
 
         print(f"Model saved to: {save_path}")
+        print(f"Note: INT4 model uses LoRA adapters, load with PEFT for XAI")
 
         return train_result
 
-    def evaluate(self, model_path=None):
+    def evaluate(self, model_path=None, dataset_path=None):
         if model_path is None:
             model_path = str(self.config.save_dir)
 
+        test_file = dataset_path if dataset_path else str(self.config.test_file)
+
         print("=" * 70)
         print(f"Evaluating {self.quantization_type.upper()} Fake QAT Model")
+        print(f"Dataset: {test_file}")
         print("=" * 70)
 
         tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -415,9 +431,13 @@ class FakeQATTrainer:
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_path,
                 quantization_config=quantization_config,
+                num_labels=self.config.num_labels,
             )
         else:
-            model = AutoModelForSequenceClassification.from_pretrained(model_path)
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_path,
+                num_labels=self.config.num_labels,
+            )
 
         model.eval()
 
@@ -425,7 +445,7 @@ class FakeQATTrainer:
         print(f"Number of parameters: {model.num_parameters():,}")
 
         tokenized_dataset = self._load_and_preprocess(
-            splits={'test': str(self.config.test_file)}
+            splits={'test': test_file}
         )
 
         print(f"Test samples: {len(tokenized_dataset['test']):,}")
@@ -436,8 +456,10 @@ class FakeQATTrainer:
 
         eval_args = TrainingArguments(
             output_dir=results_dir,
+            overwrite_output_dir=True,
             per_device_eval_batch_size=self.config.batch_size,
-            fp16=use_fp16,
+            fp16=False,
+            no_cuda=True,
             report_to="none",
         )
 
@@ -446,7 +468,7 @@ class FakeQATTrainer:
             args=eval_args,
             eval_dataset=tokenized_dataset["test"],
             compute_metrics=self._compute_metrics,
-            tokenizer=tokenizer,
+            processing_class=tokenizer,
         )
 
         print(
@@ -464,6 +486,36 @@ class FakeQATTrainer:
         predictions_output = trainer.predict(tokenized_dataset["test"])
         y_pred = predictions_output.predictions.argmax(-1)
         y_true = predictions_output.label_ids
+
+        print("\nMeasuring per-sample inference latency...")
+        device = next(model.parameters()).device
+        per_sample_latencies = []
+        batch_size = self.config.batch_size
+        num_samples = len(tokenized_dataset["test"])
+
+        with torch.no_grad():
+            for i in range(0, num_samples, batch_size):
+                batch_end = min(i + batch_size, num_samples)
+                batch = tokenized_dataset["test"][i:batch_end]
+                input_ids = torch.tensor(batch["input_ids"]).to(device)
+                attention_mask = torch.tensor(batch["attention_mask"]).to(device)
+
+                start_time = time.time()
+                model(input_ids=input_ids, attention_mask=attention_mask)
+                elapsed = time.time() - start_time
+
+                batch_actual_size = batch_end - i
+                per_sample_time = elapsed / batch_actual_size
+                per_sample_latencies.extend([per_sample_time] * batch_actual_size)
+
+        latency_stats = {
+            'mean': float(np.mean(per_sample_latencies)),
+            'std': float(np.std(per_sample_latencies)),
+            'min': float(np.min(per_sample_latencies)),
+            'max': float(np.max(per_sample_latencies)),
+            'median': float(np.median(per_sample_latencies)),
+        }
+        print(f"Mean Latency: {latency_stats['mean']*1000:.2f} ms/sample")
 
         label_names = [
             self.config.id2label[i].capitalize()
@@ -518,6 +570,8 @@ class FakeQATTrainer:
                     "model_type": self.quantization_type.upper(),
                     "method": "fake",
                     "overall_metrics": results,
+                    "latencies": [float(x) for x in per_sample_latencies],
+                    "latency_stats": latency_stats,
                     "classification_report": report_dict,
                 },
                 f,

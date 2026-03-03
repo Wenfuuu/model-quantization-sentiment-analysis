@@ -64,7 +64,7 @@ class QATTrainer:
 
         for batch in tqdm(self.train_loader, desc="QAT Training"):
             batch = self._move_batch(batch)
-            outputs = self.model(**batch, labels=batch.get("labels"))
+            outputs = self.model(**batch)
             loss = outputs.loss
 
             loss.backward()
