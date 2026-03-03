@@ -1,7 +1,6 @@
 import copy
 import torch
 import torch.nn as nn
-from src.config import DEVICE
 
 
 class FakeINT4Quantizer:
@@ -19,6 +18,6 @@ class FakeINT4Quantizer:
                     module.weight.data = torch.fake_quantize_per_tensor_affine(
                         w, float(scale), 0, -8, 7
                     )
-        model_fake = model_fake.to(DEVICE)
+        model_fake = model_fake.to(torch.device("cpu"))
         model_fake.eval()
         return model_fake

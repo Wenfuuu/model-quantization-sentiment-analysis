@@ -51,7 +51,30 @@ EXPERIMENT_CONFIGS = {
     },
 }
 
+QAT_EXPERIMENT_CONFIGS = {
+    "qat_eager_smsa": {
+        "model_paths": {
+            "int8": str(BASE_DIR / "outputs" / "indobert-qat-int8-smsa" / "hf_model"),
+            "fp16": str(BASE_DIR / "outputs" / "indobert-qat-fp16-smsa" / "hf_model"),
+            "int4": str(BASE_DIR / "outputs" / "indobert-qat-int4-smsa" / "hf_model"),
+        },
+        "dataset": "smsa",
+        "output_dir": BASE_DIR / "outputs" / "qat-eager-smsa",
+    },
+    "qat_fake_smsa": {
+        "model_paths": {
+            "int8": str(BASE_DIR / "outputs" / "indobert-smsa-qat-int8-fake"),
+            "fp16": str(BASE_DIR / "outputs" / "indobert-smsa-qat-fp16-fake"),
+            "int4": str(BASE_DIR / "outputs" / "indobert-smsa-qat-int4-fake"),
+        },
+        "dataset": "smsa",
+        "output_dir": BASE_DIR / "outputs" / "qat-fake-smsa",
+    },
+}
+
 DATASET_PATHS = {
     "smsa": BASE_DIR / "datasets" / "test.tsv",
+    "smsa_train": BASE_DIR / "datasets" / "train.tsv",
+    "smsa_valid": BASE_DIR / "datasets" / "valid.tsv",
     "tweets": BASE_DIR / "datasets" / "INA_TweetsPPKM_Labeled_Pure.csv",
 }
