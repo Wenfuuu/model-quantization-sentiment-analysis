@@ -103,12 +103,7 @@ class FakeQATTrainer:
 
     def train(self):
         if self.quantization_type == "fp16":
-            raise NotImplementedError(
-                "FP16 QAT has been retired. PyTorch's fbgemm qconfig applies "
-                "INT8 quantization regardless of the 'fp16' label — FP16 QAT "
-                "is not a meaningful operation in this backend. "
-                "Use PTQ-FP16 (model.half()) for FP16 inference instead."
-            )
+            return self._train_fp16()
         if self.quantization_type == "int8":
             return self._train_int8()
         elif self.quantization_type == "int4":
@@ -210,6 +205,7 @@ class FakeQATTrainer:
         return train_result
 
     def _train_fp16(self):
+        set_seed(42)
         print("=" * 70)
         print("FP16 Fake QAT Training - SMSA Sentiment Analysis")
         print("=" * 70)
@@ -295,8 +291,8 @@ class FakeQATTrainer:
         return train_result
 
     def _train_int4(self):
-        from transformers import BitsAndBytesConfig
-        from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
+        from torch.quantization.fake_quantize import FakeQuantize
+        from torch.quantization.observer import MovingAverageMinMaxObserver
 
         set_seed(42)
         print("=" * 70)
@@ -309,50 +305,45 @@ class FakeQATTrainer:
         print(f"Validation samples: {len(tokenized_dataset['validation']):,}")
         print(f"Test samples: {len(tokenized_dataset['test']):,}")
 
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        )
-
         model = AutoModelForSequenceClassification.from_pretrained(
             self.config.model_id,
             num_labels=self.config.num_labels,
             id2label=self.config.id2label,
             label2id=self.config.label2id,
-            quantization_config=quantization_config,
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True,
         )
 
-        print(f"INT4 Model loaded: {model.num_parameters():,} parameters")
+        print(f"Model loaded: {model.num_parameters():,} parameters")
 
-        model.gradient_checkpointing_enable()
-        model.config.use_cache = False
+        model.train()
 
-        model = prepare_model_for_kbit_training(model)
-
-        lora_config = LoraConfig(
-            r=16,
-            lora_alpha=32,
-            target_modules=["query", "key", "value"],
-            lora_dropout=0.1,
-            bias="none",
-            task_type="SEQ_CLS",
+        int4_qconfig = torch.quantization.QConfig(
+            activation=torch.quantization.default_fake_quant,
+            weight=FakeQuantize.with_args(
+                observer=MovingAverageMinMaxObserver,
+                quant_min=-8,
+                quant_max=7,
+                dtype=torch.qint8,
+                qscheme=torch.per_tensor_symmetric,
+            ),
         )
 
-        model = get_peft_model(model, lora_config)
-        model.print_trainable_parameters()
+        model.qconfig = int4_qconfig
+
+        if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
+            model.bert.embeddings.qconfig = None
+            print("Embedding layer excluded from quantization")
+
+        quantization.prepare_qat(model, inplace=True)
+        print("Model prepared for QAT (4-bit symmetric weight fake quantization)")
 
         output_dir = str(self.config.results_dir)
 
         training_args = TrainingArguments(
             output_dir=output_dir,
             overwrite_output_dir=True,
-            learning_rate=2e-4,
-            per_device_train_batch_size=8,
-            per_device_eval_batch_size=8,
+            learning_rate=self.config.learning_rate,
+            per_device_train_batch_size=self.config.batch_size,
+            per_device_eval_batch_size=self.config.batch_size,
             num_train_epochs=self.config.epochs,
             weight_decay=self.config.weight_decay,
             eval_strategy="epoch",
@@ -364,8 +355,6 @@ class FakeQATTrainer:
             report_to="none",
             fp16=False,
             no_cuda=True,
-            gradient_checkpointing=True,
-            optim="paged_adamw_8bit",
             push_to_hub=False,
         )
 
@@ -373,7 +362,7 @@ class FakeQATTrainer:
         print(f"Learning rate: {training_args.learning_rate}")
         print(f"Batch size: {training_args.per_device_train_batch_size}")
         print(f"Epochs: {training_args.num_train_epochs}")
-        print("Quantization: INT4 (4-bit NF4 with LoRA)")
+        print("Quantization: INT4 (4-bit symmetric weight fake quant)")
 
         trainer = Trainer(
             model=model,
@@ -403,8 +392,11 @@ class FakeQATTrainer:
         trainer.save_model(save_path)
         self.tokenizer.save_pretrained(save_path)
 
+        ptq_model_path = os.path.join(save_path, "model_int4.pth")
+        torch.save(model.state_dict(), ptq_model_path)
+        ptq_size = os.path.getsize(ptq_model_path) / (1024 * 1024)
         print(f"Model saved to: {save_path}")
-        print(f"Note: INT4 model uses LoRA adapters, load with PEFT for XAI")
+        print(f"PTQ-compatible model saved: {ptq_model_path} ({ptq_size:.2f} MB)")
 
         return train_result
 
@@ -421,24 +413,19 @@ class FakeQATTrainer:
 
         tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-        if self.quantization_type == "int4":
-            from transformers import BitsAndBytesConfig
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-            )
-            model = AutoModelForSequenceClassification.from_pretrained(
-                model_path,
-                quantization_config=quantization_config,
-                num_labels=self.config.num_labels,
-            )
-        else:
-            model = AutoModelForSequenceClassification.from_pretrained(
-                model_path,
-                num_labels=self.config.num_labels,
-            )
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_path,
+            num_labels=self.config.num_labels,
+        )
+
+        if self.quantization_type == "fp16":
+            model = model.half()
+            print("Applied FP16 precision reduction to model weights")
+        elif self.quantization_type == "int4":
+            from src.quantization.ptq.int4 import INT4Quantizer
+            quantizer = INT4Quantizer(bits=4)
+            model = quantizer.quantize_model(model)
+            print("Applied INT4 symmetric weight-only quantization")
 
         model.eval()
 
@@ -450,8 +437,6 @@ class FakeQATTrainer:
         )
 
         print(f"Test samples: {len(tokenized_dataset['test']):,}")
-
-        use_fp16 = self.quantization_type in ("fp16", "int4")
 
         results_dir = str(self.config.results_dir)
 
