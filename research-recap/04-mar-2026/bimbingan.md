@@ -1,0 +1,10 @@
+- ga perlu di tebelin yang bagian sastrawi
+- ganti format numbering yang bagian stress testing
+- bab 3 ada gambar schemanya 
+- ada typo di preporcessing nextnya harus di grammar check
+- ditulis aja pembagian datasetsnya gaperlu ada visualisasi (yg data preprocessing) 
+- ptq rumus harus di mention drmna
+- tanda kurung itu opsional yang [14] ini bagian E, kalau di hilangin kalimat gk rusak (silahkan di mengerti lg y sir gw gk paham) biasanya kurung di akhir kalimat, jadi namanya ga perlu muncul lagi
+- bahasa indo kasi bahasa inggrisnya aja (ud ad di ptq vs qat) 
+- jadi betternya scientific drpd teknisnya utk journal
+- bagusnya papernya bawa dengan previous work aja supaya lebih ada relasi
