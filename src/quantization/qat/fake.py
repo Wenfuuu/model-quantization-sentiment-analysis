@@ -475,26 +475,33 @@ class FakeQATTrainer:
         y_pred = predictions_output.predictions.argmax(-1)
         y_true = predictions_output.label_ids
 
-        print("\nMeasuring per-sample inference latency...")
+        num_runs = 20
+        warmup_runs = 5
+        print(f"\nMeasuring per-sample inference latency ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
         device = next(model.parameters()).device
         per_sample_latencies = []
-        batch_size = self.config.batch_size
         num_samples = len(tokenized_dataset["test"])
 
         with torch.no_grad():
-            for i in range(0, num_samples, batch_size):
-                batch_end = min(i + batch_size, num_samples)
-                batch = tokenized_dataset["test"][i:batch_end]
-                input_ids = torch.tensor(batch["input_ids"]).to(device)
-                attention_mask = torch.tensor(batch["attention_mask"]).to(device)
+            for i in range(num_samples):
+                sample = tokenized_dataset["test"][i]
+                input_ids = torch.tensor([sample["input_ids"]]).to(device)
+                attention_mask = torch.tensor([sample["attention_mask"]]).to(device)
 
-                start_time = time.time()
-                model(input_ids=input_ids, attention_mask=attention_mask)
-                elapsed = time.time() - start_time
+                for _ in range(warmup_runs):
+                    model(input_ids=input_ids, attention_mask=attention_mask)
 
-                batch_actual_size = batch_end - i
-                per_sample_time = elapsed / batch_actual_size
-                per_sample_latencies.extend([per_sample_time] * batch_actual_size)
+                sample_latencies = []
+                for _ in range(num_runs):
+                    start_time = time.time()
+                    model(input_ids=input_ids, attention_mask=attention_mask)
+                    elapsed = time.time() - start_time
+                    sample_latencies.append(elapsed)
+
+                per_sample_latencies.append(float(np.mean(sample_latencies)))
+
+                if (i + 1) % 100 == 0:
+                    print(f"  Processed {i + 1}/{num_samples} samples...")
 
         latency_stats = {
             'mean': float(np.mean(per_sample_latencies)),

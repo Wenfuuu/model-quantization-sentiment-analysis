@@ -452,39 +452,41 @@ class EagerQATTrainer:
 
         predictions = []
         true_labels = []
-        inference_times = []
         per_sample_latencies = []
-        batch_size = self.config.batch_size
+        num_runs = 20
+        warmup_runs = 5
 
-        print("\nRunning inference on test set...")
+        print(f"\nRunning inference on test set ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
 
-        for i in range(0, num_samples, batch_size):
-            batch_end = min(i + batch_size, num_samples)
-            batch = tokenized_dataset['test'][i:batch_end]
+        for i in range(num_samples):
+            sample = tokenized_dataset['test'][i]
+            input_ids = np.array([sample['input_ids']], dtype=np.int64)
+            attention_mask = np.array([sample['attention_mask']], dtype=np.int64)
 
-            input_ids = np.array(batch['input_ids'], dtype=np.int64)
-            attention_mask = np.array(batch['attention_mask'], dtype=np.int64)
+            for _ in range(warmup_runs):
+                session.run(
+                    None,
+                    {'input_ids': input_ids, 'attention_mask': attention_mask},
+                )
 
-            start_time = time.time()
-            outputs = session.run(
-                None,
-                {'input_ids': input_ids, 'attention_mask': attention_mask},
-            )
-            inference_time = time.time() - start_time
-            inference_times.append(inference_time)
+            sample_latencies = []
+            for _ in range(num_runs):
+                start_time = time.time()
+                outputs = session.run(
+                    None,
+                    {'input_ids': input_ids, 'attention_mask': attention_mask},
+                )
+                elapsed = time.time() - start_time
+                sample_latencies.append(elapsed)
 
-            batch_actual_size = batch_end - i
-            per_sample_time = inference_time / batch_actual_size
-            per_sample_latencies.extend([per_sample_time] * batch_actual_size)
+            per_sample_latencies.append(float(np.mean(sample_latencies)))
 
             logits = outputs[0]
-            batch_predictions = np.argmax(logits, axis=1)
+            predictions.append(int(np.argmax(logits, axis=1)[0]))
+            true_labels.append(sample['label'])
 
-            predictions.extend(batch_predictions)
-            true_labels.extend(batch['label'])
-
-            if (i // batch_size + 1) % 10 == 0:
-                print(f"Processed {batch_end}/{num_samples} samples...")
+            if (i + 1) % 100 == 0:
+                print(f"  Processed {i + 1}/{num_samples} samples...")
 
         predictions = np.array(predictions)
         true_labels = np.array(true_labels)
@@ -494,9 +496,8 @@ class EagerQATTrainer:
             true_labels, predictions, average='weighted'
         )
 
-        total_time = sum(inference_times)
-        avg_time_per_batch = np.mean(inference_times) * 1000
-        samples_per_second = num_samples / total_time
+        total_time = sum(per_sample_latencies)
+        samples_per_second = num_samples / total_time if total_time > 0 else 0
 
         latency_stats = {
             'mean': float(np.mean(per_sample_latencies)),
@@ -516,7 +517,6 @@ class EagerQATTrainer:
         print(f"  Mean Latency: {latency_stats['mean']*1000:.2f} ms/sample")
         print("=" * 70)
         print(f"\nTotal time: {total_time:.2f}s")
-        print(f"Avg per batch ({batch_size} samples): {avg_time_per_batch:.2f}ms")
         print(f"Samples/second: {samples_per_second:.2f}")
 
         label_names = [
@@ -575,7 +575,6 @@ class EagerQATTrainer:
                 'f1': float(f1),
                 'total_samples': int(num_samples),
                 'total_time_seconds': float(total_time),
-                'avg_time_per_batch_ms': float(avg_time_per_batch),
                 'samples_per_second': float(samples_per_second),
             },
             'latencies': [float(x) for x in per_sample_latencies],
