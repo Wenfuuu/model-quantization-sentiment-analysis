@@ -37,7 +37,7 @@ def _get_confidence_for_class(
         text,
         return_tensors="pt",
         truncation=True,
-        max_length=512,
+        max_length=128,
         padding=False,
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -222,7 +222,7 @@ class FaithfulnessEvaluator:
         scores_arr = np.array(scores, dtype=float)
 
         orig_inputs = self.tokenizer(
-            text, return_tensors="pt", truncation=True, max_length=512
+            text, return_tensors="pt", truncation=True, max_length=128
         )
         orig_inputs = {k: v.to(self.device) for k, v in orig_inputs.items()}
         with torch.no_grad():

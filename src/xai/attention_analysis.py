@@ -126,7 +126,7 @@ def extract_attention_weights(
         text,
         return_tensors="pt",
         truncation=True,
-        max_length=512,
+        max_length=128,
         padding=False,
     )
 

@@ -12,7 +12,7 @@ from src.quantization.qat.fake import FakeQATTrainer
 from src.visualization import QuantizationPlotter
 
 
-def get_default_config(method, quant_type):
+def get_default_config(method, quant_type, sample_frac=1.0):
     output_dir = BASE_DIR / "outputs"
 
     if method == "eager":
@@ -29,11 +29,12 @@ def get_default_config(method, quant_type):
         test_file=DATASET_PATHS["smsa"],
         save_dir=output_dir / save_name,
         results_dir=output_dir / results_name,
+        sample_frac=sample_frac,
     )
 
 
-def run_eager_qat(quant_type, dataset_path=None):
-    config = get_default_config("eager", quant_type)
+def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0):
+    config = get_default_config("eager", quant_type, sample_frac=sample_frac)
     trainer = EagerQATTrainer(config, quantization_type=quant_type)
 
     print(f"\n[Step 1/4] Training with QAT ({quant_type.upper()} eager)...")
@@ -50,8 +51,8 @@ def run_eager_qat(quant_type, dataset_path=None):
     return results
 
 
-def run_fake_qat(quant_type, dataset_path=None):
-    config = get_default_config("fake", quant_type)
+def run_fake_qat(quant_type, dataset_path=None, sample_frac=1.0):
+    config = get_default_config("fake", quant_type, sample_frac=sample_frac)
     trainer = FakeQATTrainer(config, quantization_type=quant_type)
 
     print(f"\n[Step 1/2] Training with fake QAT ({quant_type.upper()})...")
@@ -75,12 +76,12 @@ def interactive_menu():
     method_choice = input("\n  Enter choice (1/2/3): ").strip()
 
     print("\n  Select Quantization Type:")
-    print("  [1] INT8")
-    print("  [2] INT4")
-    print("  [3] All (INT8 + INT4)")
-    print("  [NOTE] FP16 QAT is retired — use PTQ-FP16 instead.")
+    print("  [1] FP16")
+    print("  [2] INT8")
+    print("  [3] INT4")
+    print("  [4] All (FP16 + INT8 + INT4)")
 
-    quant_choice = input("\n  Enter choice (1/2/3): ").strip()
+    quant_choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
     if method_choice == "1":
         methods = ["eager"]
@@ -90,11 +91,13 @@ def interactive_menu():
         methods = ["eager", "fake"]
 
     if quant_choice == "1":
-        quant_types = ["int8"]
+        quant_types = ["fp16"]
     elif quant_choice == "2":
+        quant_types = ["int8"]
+    elif quant_choice == "3":
         quant_types = ["int4"]
     else:
-        quant_types = ["int8", "int4"]
+        quant_types = ["fp16", "int8", "int4"]
 
     print("\n  Select Evaluation Dataset:")
     print(f"  [1] SMSA (test.tsv) - {DATASET_PATHS['smsa']}")
@@ -110,7 +113,13 @@ def interactive_menu():
     else:
         dataset_path = None
 
-    return methods, quant_types, dataset_path
+    sample_frac = 1.0
+    if dataset_choice == "2":
+        pct_input = input("\n  Berapa persen data Tweets yang digunakan? (1-100, default=100): ").strip()
+        if pct_input:
+            sample_frac = max(1, min(100, int(pct_input))) / 100.0
+
+    return methods, quant_types, dataset_path, sample_frac
 
 
 def _load_evaluation_json(method, quant_type):
@@ -160,7 +169,7 @@ def _generate_qat_comparison(method, quant_types):
     print(f"\nQAT {method.upper()} comparison chart saved to: {chart_path}")
 
 
-def run_qat_from_menu(methods, quant_types, dataset_path=None):
+def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0):
     total = len(methods) * len(quant_types)
     current = 0
 
@@ -172,9 +181,9 @@ def run_qat_from_menu(methods, quant_types, dataset_path=None):
             print("=" * 70)
 
             if method == "eager":
-                run_eager_qat(quant_type, dataset_path=dataset_path)
+                run_eager_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac)
             else:
-                run_fake_qat(quant_type, dataset_path=dataset_path)
+                run_fake_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac)
 
     for method in methods:
         _generate_qat_comparison(method, quant_types)
@@ -210,11 +219,10 @@ def main():
         help="Evaluation dataset: smsa (test.tsv), tweets (INA_TweetsPPKM), or default (datasets/test.tsv)",
     )
     parser.add_argument(
-        "--dataset",
-        type=str,
-        choices=["smsa", "tweets", "default"],
-        default="default",
-        help="Evaluation dataset: smsa (test.tsv), tweets (INA_TweetsPPKM), or default (datasets/test.tsv)",
+        "--sample-frac",
+        type=float,
+        default=1.0,
+        help="Fraction of data to use for Tweets dataset (0.0-1.0, default: 1.0 = all data)",
     )
     args = parser.parse_args()
 
@@ -226,7 +234,7 @@ def main():
     else:
         dataset_path = None
 
-    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path)
+    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=args.sample_frac)
 
 
 if __name__ == "__main__":
