@@ -69,7 +69,7 @@ def build_alignment(
         text,
         return_offsets_mapping=True,
         truncation=True,
-        max_length=512,
+        max_length=128,
         add_special_tokens=True,
     )
 

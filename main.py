@@ -4,7 +4,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment
-from scripts.run_fake_ptq import interactive_menu as fake_ptq_menu, run_fake_ptq_experiment
 from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment
 from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu
 from scripts.run_stress_test import interactive_menu as stress_menu, run_stress_test_experiment
@@ -38,34 +37,8 @@ def run_ptq():
         print(f"  Size: FP32={res['fp32_size_mb']:.1f}MB | FP16={res['fp16_size_mb']:.1f}MB | INT8={res['int8_size_mb']:.1f}MB | INT4={res['int4_size_mb']:.1f}MB")
 
 
-def run_fake_ptq():
-    selected, num_runs_override = fake_ptq_menu()
-
-    print("\n" + "=" * 80)
-    print(f"STARTING FAKE PTQ EXPERIMENTS - {len(selected)} VERSION(S) TO RUN")
-    print("=" * 80)
-    for i, key in enumerate(selected, 1):
-        print(f"  [{i}/{len(selected)}] {key}")
-    print("=" * 80 + "\n")
-
-    all_results = {}
-    for idx, version_key in enumerate(selected, 1):
-        print("\n" + "#" * 80)
-        print(f"# RUNNING FAKE PTQ EXPERIMENT [{idx}/{len(selected)}]: {version_key.upper()}")
-        print("#" * 80 + "\n")
-        result = run_fake_ptq_experiment(version_key, num_runs_override=num_runs_override)
-        all_results[version_key] = result
-        print(f"\n  Completed [{idx}/{len(selected)}]: {version_key}")
-
-    print_section("ALL FAKE PTQ EXPERIMENTS COMPLETED")
-    for key, res in all_results.items():
-        print(f"\n{key}:")
-        print(f"  Accuracy: FP32={res['fp32_results']['accuracy']*100:.2f}% | FakeFP16={res['fp16_results']['accuracy']*100:.2f}% | FakeINT8={res['int8_results']['accuracy']*100:.2f}% | FakeINT4={res['int4_results']['accuracy']*100:.2f}%")
-        print(f"  Size: FP32={res['fp32_size_mb']:.1f}MB | FakeFP16={res['fp16_size_mb']:.1f}MB | FakeINT8={res['int8_size_mb']:.1f}MB | FakeINT4={res['int4_size_mb']:.1f}MB")
-
-
 def run_qat():
-    methods, quant_types, dataset_path = qat_menu()
+    methods, quant_types, dataset_path, sample_frac = qat_menu()
 
     total = len(methods) * len(quant_types)
     combos = [f"{m.upper()} {q.upper()}" for m in methods for q in quant_types]
@@ -79,7 +52,7 @@ def run_qat():
         print(f"  [{i}/{total}] {combo}")
     print("=" * 80 + "\n")
 
-    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path)
+    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=sample_frac)
 
     print_section("ALL QAT EXPERIMENTS COMPLETED")
 
@@ -136,16 +109,7 @@ def main():
     choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
     if choice == "1":
-        print("\n  Select PTQ Method:")
-        print("  [1] PTQ Original (Real Quantization)")
-        print("  [2] PTQ Fake Quantization (Simulated)")
-
-        ptq_choice = input("\n  Enter choice (1/2): ").strip()
-
-        if ptq_choice == "2":
-            run_fake_ptq()
-        else:
-            run_ptq()
+        run_ptq()
     elif choice == "2":
         run_qat()
     elif choice == "3":

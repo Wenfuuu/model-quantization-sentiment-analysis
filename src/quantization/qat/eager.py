@@ -39,7 +39,7 @@ class EagerQATTrainer:
         if not isinstance(text, str):
             return ""
         text = text.lower()
-        text = re.sub(r'[^a-z\s]', '', text)
+        text = re.sub(r'[^a-z\s]', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
@@ -63,7 +63,8 @@ class EagerQATTrainer:
             df_preview = pd.read_csv(split_path, sep='\t', nrows=1)
             if 'Tweet' in df_preview.columns and 'sentiment' in df_preview.columns:
                 df = pd.read_csv(split_path, sep='\t', engine='python')
-                df = df.sample(frac=1/20, random_state=42).reset_index(drop=True)
+                if self.config.sample_frac < 1.0:
+                    df = df.sample(frac=self.config.sample_frac, random_state=42).reset_index(drop=True)
                 id2label_map = {0: 'positive', 1: 'neutral', 2: 'negative'}
                 df['text'] = df['Tweet']
                 df['label'] = df['sentiment'].map(id2label_map)
@@ -88,13 +89,6 @@ class EagerQATTrainer:
         return tokenized
 
     def train(self):
-        if self.quantization_type == "fp16":
-            raise NotImplementedError(
-                "FP16 QAT has been retired. The fbgemm backend used here applies "
-                "INT8 observers regardless of the 'fp16' label — there is no "
-                "FP16 QAT in PyTorch eager mode. Use PTQ-FP16 (model.half()) "
-                "for FP16 inference, or INT8 QAT for quantisation-aware training."
-            )
         set_seed(42)
         print("=" * 70)
         print(
@@ -213,7 +207,10 @@ class EagerQATTrainer:
             label2id=self.config.label2id,
         )
         qat_state = model_qat.state_dict()
-        clean_model.load_state_dict(qat_state, strict=False)
+        missing_keys, unexpected_keys = clean_model.load_state_dict(qat_state, strict=False)
+        if missing_keys:
+            print(f"WARNING: {len(missing_keys)} missing keys not loaded: {missing_keys[:5]}")
+        print(f"Loaded {len(qat_state) - len(unexpected_keys)}/{len(qat_state)} keys, skipped {len(unexpected_keys)} QAT observer keys")
         clean_model.eval()
 
         ptq_model_path = os.path.join(save_path, f"model_{self.quantization_type}.pth")
@@ -456,39 +453,41 @@ class EagerQATTrainer:
 
         predictions = []
         true_labels = []
-        inference_times = []
         per_sample_latencies = []
-        batch_size = self.config.batch_size
+        num_runs = 20
+        warmup_runs = 5
 
-        print("\nRunning inference on test set...")
+        print(f"\nRunning inference on test set ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
 
-        for i in range(0, num_samples, batch_size):
-            batch_end = min(i + batch_size, num_samples)
-            batch = tokenized_dataset['test'][i:batch_end]
+        for i in range(num_samples):
+            sample = tokenized_dataset['test'][i]
+            input_ids = np.array([sample['input_ids']], dtype=np.int64)
+            attention_mask = np.array([sample['attention_mask']], dtype=np.int64)
 
-            input_ids = np.array(batch['input_ids'], dtype=np.int64)
-            attention_mask = np.array(batch['attention_mask'], dtype=np.int64)
+            for _ in range(warmup_runs):
+                session.run(
+                    None,
+                    {'input_ids': input_ids, 'attention_mask': attention_mask},
+                )
 
-            start_time = time.time()
-            outputs = session.run(
-                None,
-                {'input_ids': input_ids, 'attention_mask': attention_mask},
-            )
-            inference_time = time.time() - start_time
-            inference_times.append(inference_time)
+            sample_latencies = []
+            for _ in range(num_runs):
+                start_time = time.time()
+                outputs = session.run(
+                    None,
+                    {'input_ids': input_ids, 'attention_mask': attention_mask},
+                )
+                elapsed = time.time() - start_time
+                sample_latencies.append(elapsed)
 
-            batch_actual_size = batch_end - i
-            per_sample_time = inference_time / batch_actual_size
-            per_sample_latencies.extend([per_sample_time] * batch_actual_size)
+            per_sample_latencies.append(float(np.mean(sample_latencies)))
 
             logits = outputs[0]
-            batch_predictions = np.argmax(logits, axis=1)
+            predictions.append(int(np.argmax(logits, axis=1)[0]))
+            true_labels.append(sample['label'])
 
-            predictions.extend(batch_predictions)
-            true_labels.extend(batch['label'])
-
-            if (i // batch_size + 1) % 10 == 0:
-                print(f"Processed {batch_end}/{num_samples} samples...")
+            if (i + 1) % 100 == 0:
+                print(f"  Processed {i + 1}/{num_samples} samples...")
 
         predictions = np.array(predictions)
         true_labels = np.array(true_labels)
@@ -498,9 +497,8 @@ class EagerQATTrainer:
             true_labels, predictions, average='weighted'
         )
 
-        total_time = sum(inference_times)
-        avg_time_per_batch = np.mean(inference_times) * 1000
-        samples_per_second = num_samples / total_time
+        total_time = sum(per_sample_latencies)
+        samples_per_second = num_samples / total_time if total_time > 0 else 0
 
         latency_stats = {
             'mean': float(np.mean(per_sample_latencies)),
@@ -520,7 +518,6 @@ class EagerQATTrainer:
         print(f"  Mean Latency: {latency_stats['mean']*1000:.2f} ms/sample")
         print("=" * 70)
         print(f"\nTotal time: {total_time:.2f}s")
-        print(f"Avg per batch ({batch_size} samples): {avg_time_per_batch:.2f}ms")
         print(f"Samples/second: {samples_per_second:.2f}")
 
         label_names = [
@@ -579,7 +576,6 @@ class EagerQATTrainer:
                 'f1': float(f1),
                 'total_samples': int(num_samples),
                 'total_time_seconds': float(total_time),
-                'avg_time_per_batch_ms': float(avg_time_per_batch),
                 'samples_per_second': float(samples_per_second),
             },
             'latencies': [float(x) for x in per_sample_latencies],

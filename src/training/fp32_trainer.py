@@ -60,7 +60,7 @@ class FP32Trainer:
             collate_fn=self.data_collator,
         )
 
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.learning_rate)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.learning_rate, weight_decay=0.01)
         total_steps = len(self.train_loader) * config.epochs
         warmup_steps = int(config.warmup_ratio * total_steps)
         self.scheduler = get_linear_schedule_with_warmup(
