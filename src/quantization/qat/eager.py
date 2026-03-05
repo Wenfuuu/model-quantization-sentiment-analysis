@@ -156,8 +156,8 @@ class EagerQATTrainer:
             num_train_epochs=self.config.epochs,
             weight_decay=self.config.weight_decay,
             eval_strategy="epoch",
-            save_strategy="epoch",
-            load_best_model_at_end=True,
+            save_strategy="no",
+            load_best_model_at_end=False,
             metric_for_best_model="f1",
             logging_dir=f"{output_dir}/logs",
             logging_steps=50,
@@ -166,6 +166,7 @@ class EagerQATTrainer:
             no_cuda=True,
             save_safetensors=False,
             push_to_hub=False,
+            save_total_limit=1,
         )
 
         print(f"Output directory: {output_dir}")
