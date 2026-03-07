@@ -219,9 +219,6 @@ class QuantizationPlotter:
         for k in quant_keys:
             metrics = all_results[k].get('overall_metrics', {})
             conf = metrics.get('avg_confidence', metrics.get('eval_avg_confidence', 0))
-            if conf == 0 and 'latency_stats' in all_results[k]:
-                conf = all_results[k]['latency_stats'].get('mean', 0)
-                conf = 0
             avg_confidences.append(conf * 100)
         bars = ax.bar(quant_labels, avg_confidences, color=colors, edgecolor='black', linewidth=1.2)
         for bar, val in zip(bars, avg_confidences):

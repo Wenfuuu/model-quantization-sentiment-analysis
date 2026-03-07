@@ -451,6 +451,7 @@ class EagerQATTrainer:
 
         predictions = []
         true_labels = []
+        confidences = []
         per_sample_latencies = []
         num_runs = 20
         warmup_runs = 5
@@ -481,6 +482,8 @@ class EagerQATTrainer:
             per_sample_latencies.append(float(np.mean(sample_latencies)))
 
             logits = outputs[0]
+            probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
+            confidences.append(float(np.max(probs)))
             predictions.append(int(np.argmax(logits, axis=1)[0]))
             true_labels.append(sample['label'])
 
@@ -572,6 +575,7 @@ class EagerQATTrainer:
                 'precision': float(precision),
                 'recall': float(recall),
                 'f1': float(f1),
+                'avg_confidence': float(np.mean(confidences)),
                 'total_samples': int(num_samples),
                 'total_time_seconds': float(total_time),
                 'samples_per_second': float(samples_per_second),
