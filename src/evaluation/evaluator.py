@@ -1,5 +1,12 @@
+import os
 import numpy as np
 from tqdm import tqdm
+
+
+def get_memory_mb():
+    import psutil
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / (1024 * 1024)
 
 
 class ModelEvaluator:
@@ -10,6 +17,7 @@ class ModelEvaluator:
         results = {"predictions": [], "latencies": [], "accuracy": 0, "avg_confidence": 0}
         correct = 0
         total_confidence = 0
+        mem_before = get_memory_mb()
 
         total_inferences = len(samples) * (warmup + num_runs + 1)
         print(f"Total samples: {len(samples)}")
@@ -47,6 +55,8 @@ class ModelEvaluator:
             current_accuracy = correct / len(results["predictions"])
             pbar.set_postfix({"Accuracy": f"{current_accuracy:.2%}", "Correct": f"{correct}/{len(results['predictions'])}"})
 
+        mem_after = get_memory_mb()
+        results["memory_usage_mb"] = mem_after - mem_before
         results["accuracy"] = correct / len(samples)
         results["avg_confidence"] = total_confidence / len(samples)
         results["latency_stats"] = {
