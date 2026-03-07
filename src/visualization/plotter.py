@@ -184,7 +184,7 @@ class QuantizationPlotter:
             bars = ax.bar(quant_labels, latency_stats, color=colors, edgecolor='black', linewidth=1.2)
             for bar, val in zip(bars, latency_stats):
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
-                        f'{val:.2f}ms', ha='center', va='bottom', fontweight='bold', fontsize=9)
+                        f'{val:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
             ax.set_ylabel('Mean Latency (ms)', fontweight='bold')
             ax.set_title('Latency Distribution', fontweight='bold')
 
@@ -197,7 +197,7 @@ class QuantizationPlotter:
         bars = ax.bar(quant_labels, accuracies, color=colors, edgecolor='black', linewidth=1.2)
         for bar, val in zip(bars, accuracies):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                    f'{val:.2f}%', ha='center', va='bottom', fontweight='bold', fontsize=9)
+                    f'{val:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
         ax.set_ylabel('Accuracy (%)', fontweight='bold')
         ax.set_title('Accuracy Comparison', fontweight='bold')
         ax.set_ylim(0, max(accuracies) * 1.15)
@@ -223,7 +223,7 @@ class QuantizationPlotter:
         bars = ax.bar(quant_labels, avg_confidences, color=colors, edgecolor='black', linewidth=1.2)
         for bar, val in zip(bars, avg_confidences):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                    f'{val:.2f}%', ha='center', va='bottom', fontweight='bold', fontsize=9)
+                    f'{val:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
         ax.set_ylabel('Confidence (%)', fontweight='bold')
         ax.set_title('Average Confidence', fontweight='bold')
         if any(c > 0 for c in avg_confidences):
