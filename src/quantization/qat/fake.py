@@ -412,6 +412,9 @@ class FakeQATTrainer:
         print(f"Dataset: {test_file}")
         print("=" * 70)
 
+        import psutil
+        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+
         tokenizer = AutoTokenizer.from_pretrained(model_path)
 
         model = AutoModelForSequenceClassification.from_pretrained(
@@ -561,11 +564,16 @@ class FakeQATTrainer:
             results_dir,
             f"evaluation_results_{self.quantization_type}_fake.json",
         )
+        import psutil
+        mem_after = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        memory_usage_mb = mem_after - mem_before
+
         with open(results_path, "w") as f:
             json.dump(
                 {
                     "model_type": self.quantization_type.upper(),
                     "method": "fake",
+                    "memory_usage_mb": memory_usage_mb,
                     "overall_metrics": {**results, "avg_confidence": avg_confidence},
                     "latencies": [float(x) for x in per_sample_latencies],
                     "latency_stats": latency_stats,

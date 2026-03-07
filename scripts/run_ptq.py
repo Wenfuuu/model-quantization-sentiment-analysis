@@ -237,6 +237,12 @@ def run_ptq_experiment(version_key, num_runs_override=None):
         "int8": int8_size_mb,
         "int4": int4_size_mb,
     }
+    memory_usages = {
+        "fp32": fp32_results.get("memory_usage_mb", 0),
+        "fp16": fp16_results.get("memory_usage_mb", 0),
+        "int8": int8_results.get("memory_usage_mb", 0),
+        "int4": int4_results.get("memory_usage_mb", 0),
+    }
     chart_path = plotter.create_comprehensive_plot(
         {
             "fp32": fp32_results,
@@ -246,7 +252,8 @@ def run_ptq_experiment(version_key, num_runs_override=None):
         },
         test_samples,
         version_key,
-        model_sizes=model_sizes
+        model_sizes=model_sizes,
+        memory_usages=memory_usages,
     )
     print(f"\nVisualization saved to: {chart_path}")
     

@@ -434,6 +434,9 @@ class EagerQATTrainer:
                 ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
 
+        import psutil
+        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+
         session = ort.InferenceSession(
             onnx_model_path,
             sess_options,
@@ -566,10 +569,15 @@ class EagerQATTrainer:
             zero_division=0,
         )
 
+        import psutil
+        mem_after = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        memory_usage_mb = mem_after - mem_before
+
         results_data = {
             'model_type': self.quantization_type.upper(),
             'method': 'eager',
             'provider': session.get_providers()[0],
+            'memory_usage_mb': memory_usage_mb,
             'overall_metrics': {
                 'accuracy': float(accuracy),
                 'precision': float(precision),
