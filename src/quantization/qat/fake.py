@@ -473,6 +473,9 @@ class FakeQATTrainer:
         predictions_output = trainer.predict(tokenized_dataset["test"])
         y_pred = predictions_output.predictions.argmax(-1)
         y_true = predictions_output.label_ids
+        logits_np = predictions_output.predictions
+        probs_np = np.exp(logits_np) / np.sum(np.exp(logits_np), axis=1, keepdims=True)
+        avg_confidence = float(np.mean(np.max(probs_np, axis=1)))
 
         num_runs = 20
         warmup_runs = 5
@@ -563,7 +566,7 @@ class FakeQATTrainer:
                 {
                     "model_type": self.quantization_type.upper(),
                     "method": "fake",
-                    "overall_metrics": results,
+                    "overall_metrics": {**results, "avg_confidence": avg_confidence},
                     "latencies": [float(x) for x in per_sample_latencies],
                     "latency_stats": latency_stats,
                     "classification_report": report_dict,
