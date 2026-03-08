@@ -9,6 +9,10 @@ def get_memory_mb():
     return process.memory_info().rss / (1024 * 1024)
 
 
+def get_model_param_memory_mb(model):
+    return sum(p.nelement() * p.element_size() for p in model.parameters()) / (1024 * 1024)
+
+
 class ModelEvaluator:
     def __init__(self, base_model):
         self.base_model = base_model

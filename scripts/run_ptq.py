@@ -10,7 +10,7 @@ from src.config import EXPERIMENT_CONFIGS, LABELS
 from src.data import load_smsa_dataset, load_tweets_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
-from src.evaluation import ModelEvaluator
+from src.evaluation import ModelEvaluator, get_model_param_memory_mb
 from src.visualization import QuantizationPlotter, generate_comparison_report, generate_prediction_comparison
 from src.quantization.utils import save_quantized_model, get_model_size
 from src.utils import print_section
@@ -66,6 +66,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     
     print_section("BASELINE EVALUATION (FP32 Model)")
     
+    fp32_memory_mb = get_model_param_memory_mb(base_model.model)
     evaluator = ModelEvaluator(base_model)
     fp32_results = evaluator.evaluate(test_samples, num_runs=num_runs, warmup=warmup)
     
@@ -91,6 +92,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     print(f"Size Reduction: {(1 - fp16_size_mb/fp32_size_mb)*100:.2f}%")
     
     base_model_fp16 = BaseModel(model_fp16, base_model.tokenizer, device=torch.device("cpu"))
+    fp16_memory_mb = get_model_param_memory_mb(model_fp16)
     evaluator_fp16 = ModelEvaluator(base_model_fp16)
     fp16_results = evaluator_fp16.evaluate(test_samples, num_runs=num_runs, warmup=warmup, use_fp16=True)
     
@@ -110,6 +112,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     print(f"Size Reduction: {(1 - int8_size_mb/fp32_size_mb)*100:.2f}%")
     
     base_model_int8 = BaseModel(model_int8, base_model.tokenizer, device=torch.device("cpu"))
+    int8_memory_mb = get_model_param_memory_mb(model_int8)
     evaluator_int8 = ModelEvaluator(base_model_int8)
     int8_results = evaluator_int8.evaluate(test_samples, num_runs=num_runs, warmup=warmup)
     
@@ -129,6 +132,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     print(f"Size Reduction: {(1 - int4_size_mb/fp32_size_mb)*100:.2f}%")
     
     base_model_int4 = BaseModel(model_int4, base_model.tokenizer, device=torch.device("cpu"))
+    int4_memory_mb = get_model_param_memory_mb(model_int4)
     evaluator_int4 = ModelEvaluator(base_model_int4)
     int4_results = evaluator_int4.evaluate(test_samples, num_runs=num_runs, warmup=warmup)
     
@@ -238,10 +242,10 @@ def run_ptq_experiment(version_key, num_runs_override=None):
         "int4": int4_size_mb,
     }
     memory_usages = {
-        "fp32": fp32_results.get("memory_usage_mb", 0),
-        "fp16": fp16_results.get("memory_usage_mb", 0),
-        "int8": int8_results.get("memory_usage_mb", 0),
-        "int4": int4_results.get("memory_usage_mb", 0),
+        "fp32": fp32_memory_mb,
+        "fp16": fp16_memory_mb,
+        "int8": int8_memory_mb,
+        "int4": int4_memory_mb,
     }
     chart_path = plotter.create_comprehensive_plot(
         {

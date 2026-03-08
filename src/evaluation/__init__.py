@@ -1,4 +1,4 @@
-from .evaluator import ModelEvaluator
+from .evaluator import ModelEvaluator, get_model_param_memory_mb
 from .metrics import compute_metrics, compare_predictions
 from .explanation_drift import (
     aggregate_explanation_drift,
