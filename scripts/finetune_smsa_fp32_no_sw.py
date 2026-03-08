@@ -24,9 +24,6 @@ from transformers import (
 )
 from sklearn.metrics import f1_score, accuracy_score, classification_report
 from tqdm import tqdm
-from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
-
-_stopword_remover = StopWordRemoverFactory().create_stop_word_remover()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.config import DEVICE
@@ -36,7 +33,7 @@ warnings.filterwarnings("ignore")
 
 BASE_DIR   = Path(__file__).parent.parent
 DATA_DIR   = BASE_DIR / "datasets"
-_DEFAULT_SAVE_DIR = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"
+_DEFAULT_SAVE_DIR = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-no-sw-finetuned"
 MODEL_ID   = "indobenchmark/indobert-base-p2"
 MAX_LENGTH = 128
 
@@ -47,7 +44,6 @@ def preprocess_text(text: str) -> str:
     import re
     text = text.lower()
     text = re.sub(r"\s+", " ", text).strip()
-    text = _stopword_remover.remove(text)
     return text
 
 class SMSADataset(Dataset):
@@ -122,7 +118,7 @@ def main(args):
     history_path = SAVE_DIR / "training_history.json"
 
     print("=" * 60)
-    print("  FINETUNING: IndoBERT → SMSA 3-label")
+    print("  FINETUNING: IndoBERT → SMSA 3-label (no stopword removal)")
     print(f"  Model:   {MODEL_ID}")
     print(f"  Device:  {DEVICE}")
     print(f"  Epochs:  {args.epochs}")
@@ -241,7 +237,7 @@ def main(args):
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Fine-tune IndoBERT on SMSA (3-label). "
+        description="Fine-tune IndoBERT on SMSA (3-label) WITHOUT stopword removal. "
                     "Designed to be called once per seed, either directly "
                     "or via finetune_multi_seed.py."
     )
@@ -254,7 +250,7 @@ def parse_args():
         type=str,
         default=None,
         help="Override checkpoint save directory. "
-             "Defaults to finetuned-model/indobert-fp32-smsa-3label-finetuned.",
+             "Defaults to finetuned-model/indobert-fp32-smsa-3label-no-sw-finetuned.",
     )
     return p.parse_args()
 
