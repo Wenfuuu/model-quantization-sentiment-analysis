@@ -23,10 +23,14 @@ _CKPT_TEMPLATE = "indobert-fp32-smsa-3label-seed{seed}"
 _AGG_OUTPUT_DIR  = _PROJECT_ROOT / "outputs" / "multi-seed"
 _AGG_OUTPUT_FILE = _AGG_OUTPUT_DIR / "aggregated_finetune_results.json"
 
-_FINETUNE_SCRIPT = Path(__file__).parent / "finetune_smsa_fp32.py"
+_FINETUNE_SCRIPT        = Path(__file__).parent / "finetune_smsa_fp32.py"
+_FINETUNE_SCRIPT_NO_SW  = Path(__file__).parent / "finetune_smsa_fp32_no_sw.py"
 
-def seed_checkpoint_dir(seed: int) -> Path:
-    return _PROJECT_ROOT / "finetuned-model" / _CKPT_TEMPLATE.format(seed=seed)
+_CKPT_TEMPLATE_NO_SW = "indobert-fp32-smsa-3label-no-sw-seed{seed}"
+
+def seed_checkpoint_dir(seed: int, ckpt_suffix: str = "") -> Path:
+    template = _CKPT_TEMPLATE_NO_SW if ckpt_suffix == "-no-sw" else _CKPT_TEMPLATE
+    return _PROJECT_ROOT / "finetuned-model" / template.format(seed=seed)
 
 
 def run_single_seed(
@@ -36,8 +40,10 @@ def run_single_seed(
     lr: float,
     batch_size: int,
     skip_if_exists: bool = True,
+    finetune_script: Path = _FINETUNE_SCRIPT,
+    ckpt_suffix: str = "",
 ) -> Path:
-    ckpt_dir = seed_checkpoint_dir(seed)
+    ckpt_dir = seed_checkpoint_dir(seed, ckpt_suffix)
     result_file = ckpt_dir / "finetune_results.json"
 
     if skip_if_exists and result_file.exists():
@@ -51,7 +57,7 @@ def run_single_seed(
 
     cmd = [
         sys.executable,
-        str(_FINETUNE_SCRIPT),
+        str(finetune_script),
         "--seed",       str(seed),
         "--epochs",     str(epochs),
         "--lr",         str(lr),
@@ -78,12 +84,14 @@ def write_aggregated_summary(
     seeds: list[int],
     agg: dict,
     output_path: Path,
+    finetune_script: Path = _FINETUNE_SCRIPT,
+    ckpt_suffix: str = "",
 ) -> None:
     enriched = dict(agg)
     enriched["provenance"] = {
-        "script":         str(_FINETUNE_SCRIPT.relative_to(_PROJECT_ROOT)),
+        "script":         str(finetune_script.relative_to(_PROJECT_ROOT)),
         "aggregated_by":  str(Path(__file__).relative_to(_PROJECT_ROOT)),
-        "ckpt_dirs":      {s: str(seed_checkpoint_dir(s)) for s in seeds},
+        "ckpt_dirs":      {s: str(seed_checkpoint_dir(s, ckpt_suffix)) for s in seeds},
     }
 
     save_aggregated_results(enriched, output_path, exclude_raw=False)
@@ -145,6 +153,8 @@ def parse_args() -> argparse.Namespace:
 
 def main(args: argparse.Namespace) -> None:
     seeds = args.seeds
+    finetune_script = Path(getattr(args, "finetune_script", _FINETUNE_SCRIPT))
+    ckpt_suffix     = getattr(args, "ckpt_suffix", "")
 
     if len(seeds) < 3:
         warnings.warn(
@@ -168,6 +178,8 @@ def main(args: argparse.Namespace) -> None:
             lr=args.lr,
             batch_size=args.batch_size,
             skip_if_exists=not args.no_skip,
+            finetune_script=finetune_script,
+            ckpt_suffix=ckpt_suffix,
         )
         result_file = ckpt_dir / "finetune_results.json"
         if result_file.exists():
@@ -182,7 +194,7 @@ def main(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    seed_dirs = [seed_checkpoint_dir(s) for s in successful_seeds]
+    seed_dirs = [seed_checkpoint_dir(s, ckpt_suffix) for s in successful_seeds]
 
     print(f"\nLoading results for seeds: {successful_seeds}")
     per_seed_results = load_seed_results(seed_dirs, filename="finetune_results.json")
@@ -192,10 +204,11 @@ def main(args: argparse.Namespace) -> None:
 
     print_summary(agg)
 
-    write_aggregated_summary(successful_seeds, agg, Path(args.agg_output))
+    write_aggregated_summary(successful_seeds, agg, Path(args.agg_output),
+                             finetune_script=finetune_script, ckpt_suffix=ckpt_suffix)
 
     for s in successful_seeds:
-        print(f"    seed={s:4d} → {seed_checkpoint_dir(s)}")
+        print(f"    seed={s:4d} → {seed_checkpoint_dir(s, ckpt_suffix)}")
     print()
 
 

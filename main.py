@@ -7,6 +7,13 @@ from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment
 from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment
 from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu
 from scripts.run_stress_test import interactive_menu as stress_menu, run_stress_test_experiment
+from scripts.finetune_multi_seed import (
+    main as finetune_main,
+    DEFAULT_SEEDS,
+    _AGG_OUTPUT_FILE,
+    _FINETUNE_SCRIPT,
+    _FINETUNE_SCRIPT_NO_SW,
+)
 from src.config import EXPERIMENT_CONFIGS
 from src.utils import print_section
 
@@ -95,6 +102,52 @@ def run_stress():
     print_section("ALL STRESS TESTS COMPLETED")
 
 
+def run_finetune():
+    import argparse
+
+    print("\n" + "=" * 60)
+    print("  FINETUNING: IndoBERT on SMSA (3-label)")
+    print("=" * 60)
+    print("  Preprocessing:")
+    print("  [1] With stopwords removal (Sastrawi)")
+    print("  [2] Without stopwords removal")
+
+    sw_choice = input("\n  Enter choice (1/2): ").strip()
+    if sw_choice == "2":
+        finetune_script = _FINETUNE_SCRIPT_NO_SW
+        ckpt_suffix     = "-no-sw"
+        variant_label   = "WITHOUT stopwords removal"
+    else:
+        finetune_script = _FINETUNE_SCRIPT
+        ckpt_suffix     = ""
+        variant_label   = "WITH stopwords removal"
+
+    seeds      = DEFAULT_SEEDS
+    epochs     = 3
+    lr         = 2e-5
+    batch_size = 16
+
+    args = argparse.Namespace(
+        seeds=seeds,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        no_skip=False,
+        agg_output=str(_AGG_OUTPUT_FILE),
+        finetune_script=str(finetune_script),
+        ckpt_suffix=ckpt_suffix,
+    )
+
+    print("\n" + "=" * 80)
+    print(f"STARTING FINETUNING - {len(seeds)} SEED(S) ({variant_label})")
+    print(f"  Seeds: {seeds} | Epochs: {epochs} | LR: {lr} | Batch: {batch_size}")
+    print("=" * 80 + "\n")
+
+    finetune_main(args)
+
+    print_section("FINETUNING COMPLETED")
+
+
 def main():
     print("\n" + "=" * 60)
     print("  MODEL QUANTIZATION & SENTIMENT ANALYSIS")
@@ -105,8 +158,9 @@ def main():
     print("  [2] QAT (Quantization-Aware Training)")
     print("  [3] XAI (Explainability Analysis)")
     print("  [4] Stress Test (Robustness Analysis)")
+    print("  [5] Finetune (IndoBERT on SMSA)")
 
-    choice = input("\n  Enter choice (1/2/3/4): ").strip()
+    choice = input("\n  Enter choice (1/2/3/4/5): ").strip()
 
     if choice == "1":
         run_ptq()
@@ -116,6 +170,8 @@ def main():
         run_xai()
     elif choice == "4":
         run_stress()
+    elif choice == "5":
+        run_finetune()
     else:
         print("\n  Invalid choice.")
 
