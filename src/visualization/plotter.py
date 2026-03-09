@@ -82,7 +82,7 @@ class QuantizationPlotter:
         plt.tight_layout()
         return fig
 
-    def create_comprehensive_plot(self, all_results, test_samples, version_key, model_sizes=None):
+    def create_comprehensive_plot(self, all_results, test_samples, version_key, model_sizes=None, memory_usages=None):
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
         fig.suptitle(f'PTQ Analysis: {version_key}', fontsize=14, fontweight='bold')
 
@@ -125,14 +125,16 @@ class QuantizationPlotter:
         ax.set_title('Model Size Comparison', fontweight='bold')
 
         ax = axes[1, 1]
-        confidences = [all_results[k]['avg_confidence'] * 100 for k in precision_keys]
-        bars = ax.bar(precision_labels, confidences, color=colors, edgecolor='black', linewidth=1.2)
-        for bar, val in zip(bars, confidences):
+        if memory_usages is not None:
+            mem_vals = [memory_usages.get(k, 0) for k in precision_keys]
+        else:
+            mem_vals = [0] * len(precision_keys)
+        bars = ax.bar(precision_labels, mem_vals, color=colors, edgecolor='black', linewidth=1.2)
+        for bar, val in zip(bars, mem_vals):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                    f'{val:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
-        ax.set_ylabel('Confidence (%)', fontweight='bold')
-        ax.set_title('Average Confidence', fontweight='bold')
-        ax.set_ylim(0, max(confidences) * 1.15)
+                    f'{val:.1f} MB', ha='center', va='bottom', fontweight='bold', fontsize=9)
+        ax.set_ylabel('Memory Usage (MB)', fontweight='bold')
+        ax.set_title('Memory Usage', fontweight='bold')
 
         plt.tight_layout()
         chart_path = self.output_dir / f'quantization_analysis_{version_key}.png'
@@ -141,7 +143,7 @@ class QuantizationPlotter:
 
         return chart_path
 
-    def create_qat_comparison_plot(self, all_results, method_name, model_sizes=None):
+    def create_qat_comparison_plot(self, all_results, method_name, model_sizes=None, memory_usages=None):
         quant_labels = []
         quant_keys = []
         for k in ['int8', 'fp16', 'int4']:
@@ -184,7 +186,7 @@ class QuantizationPlotter:
             bars = ax.bar(quant_labels, latency_stats, color=colors, edgecolor='black', linewidth=1.2)
             for bar, val in zip(bars, latency_stats):
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
-                        f'{val:.2f}ms', ha='center', va='bottom', fontweight='bold', fontsize=9)
+                        f'{val:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
             ax.set_ylabel('Mean Latency (ms)', fontweight='bold')
             ax.set_title('Latency Distribution', fontweight='bold')
 
@@ -197,7 +199,7 @@ class QuantizationPlotter:
         bars = ax.bar(quant_labels, accuracies, color=colors, edgecolor='black', linewidth=1.2)
         for bar, val in zip(bars, accuracies):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                    f'{val:.2f}%', ha='center', va='bottom', fontweight='bold', fontsize=9)
+                    f'{val:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
         ax.set_ylabel('Accuracy (%)', fontweight='bold')
         ax.set_title('Accuracy Comparison', fontweight='bold')
         ax.set_ylim(0, max(accuracies) * 1.15)
@@ -215,22 +217,16 @@ class QuantizationPlotter:
         ax.set_title('Model Size Comparison', fontweight='bold')
 
         ax = axes[1, 1]
-        avg_confidences = []
-        for k in quant_keys:
-            metrics = all_results[k].get('overall_metrics', {})
-            conf = metrics.get('avg_confidence', metrics.get('eval_avg_confidence', 0))
-            if conf == 0 and 'latency_stats' in all_results[k]:
-                conf = all_results[k]['latency_stats'].get('mean', 0)
-                conf = 0
-            avg_confidences.append(conf * 100)
-        bars = ax.bar(quant_labels, avg_confidences, color=colors, edgecolor='black', linewidth=1.2)
-        for bar, val in zip(bars, avg_confidences):
+        if memory_usages is not None:
+            mem_vals = [memory_usages.get(k, 0) for k in quant_keys]
+        else:
+            mem_vals = [0] * len(quant_keys)
+        bars = ax.bar(quant_labels, mem_vals, color=colors, edgecolor='black', linewidth=1.2)
+        for bar, val in zip(bars, mem_vals):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                    f'{val:.2f}%', ha='center', va='bottom', fontweight='bold', fontsize=9)
-        ax.set_ylabel('Confidence (%)', fontweight='bold')
-        ax.set_title('Average Confidence', fontweight='bold')
-        if any(c > 0 for c in avg_confidences):
-            ax.set_ylim(0, max(avg_confidences) * 1.15)
+                    f'{val:.1f} MB', ha='center', va='bottom', fontweight='bold', fontsize=9)
+        ax.set_ylabel('Memory Usage (MB)', fontweight='bold')
+        ax.set_title('Memory Usage', fontweight='bold')
 
         plt.tight_layout()
         chart_path = self.output_dir / f'qat_comparison_{method_name}.png'
