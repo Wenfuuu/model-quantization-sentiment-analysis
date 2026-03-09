@@ -38,7 +38,6 @@ class FakeQATTrainer:
         if not isinstance(text, str):
             return ""
         text = text.lower()
-        text = re.sub(r'[^a-z\s]', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
@@ -413,6 +412,9 @@ class FakeQATTrainer:
         print(f"Dataset: {test_file}")
         print("=" * 70)
 
+        import psutil
+        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+
         tokenizer = AutoTokenizer.from_pretrained(model_path)
 
         model = AutoModelForSequenceClassification.from_pretrained(
@@ -474,6 +476,9 @@ class FakeQATTrainer:
         predictions_output = trainer.predict(tokenized_dataset["test"])
         y_pred = predictions_output.predictions.argmax(-1)
         y_true = predictions_output.label_ids
+        logits_np = predictions_output.predictions
+        probs_np = np.exp(logits_np) / np.sum(np.exp(logits_np), axis=1, keepdims=True)
+        avg_confidence = float(np.mean(np.max(probs_np, axis=1)))
 
         num_runs = 20
         warmup_runs = 5
@@ -559,12 +564,17 @@ class FakeQATTrainer:
             results_dir,
             f"evaluation_results_{self.quantization_type}_fake.json",
         )
+        import psutil
+        mem_after = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        memory_usage_mb = mem_after - mem_before
+
         with open(results_path, "w") as f:
             json.dump(
                 {
                     "model_type": self.quantization_type.upper(),
                     "method": "fake",
-                    "overall_metrics": results,
+                    "memory_usage_mb": memory_usage_mb,
+                    "overall_metrics": {**results, "avg_confidence": avg_confidence},
                     "latencies": [float(x) for x in per_sample_latencies],
                     "latency_stats": latency_stats,
                     "classification_report": report_dict,

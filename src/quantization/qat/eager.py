@@ -39,7 +39,6 @@ class EagerQATTrainer:
         if not isinstance(text, str):
             return ""
         text = text.lower()
-        text = re.sub(r'[^a-z\s]', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
@@ -436,6 +435,9 @@ class EagerQATTrainer:
                 ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
 
+        import psutil
+        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+
         session = ort.InferenceSession(
             onnx_model_path,
             sess_options,
@@ -453,6 +455,7 @@ class EagerQATTrainer:
 
         predictions = []
         true_labels = []
+        confidences = []
         per_sample_latencies = []
         num_runs = 20
         warmup_runs = 5
@@ -483,6 +486,8 @@ class EagerQATTrainer:
             per_sample_latencies.append(float(np.mean(sample_latencies)))
 
             logits = outputs[0]
+            probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
+            confidences.append(float(np.max(probs)))
             predictions.append(int(np.argmax(logits, axis=1)[0]))
             true_labels.append(sample['label'])
 
@@ -565,15 +570,21 @@ class EagerQATTrainer:
             zero_division=0,
         )
 
+        import psutil
+        mem_after = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        memory_usage_mb = mem_after - mem_before
+
         results_data = {
             'model_type': self.quantization_type.upper(),
             'method': 'eager',
             'provider': session.get_providers()[0],
+            'memory_usage_mb': memory_usage_mb,
             'overall_metrics': {
                 'accuracy': float(accuracy),
                 'precision': float(precision),
                 'recall': float(recall),
                 'f1': float(f1),
+                'avg_confidence': float(np.mean(confidences)),
                 'total_samples': int(num_samples),
                 'total_time_seconds': float(total_time),
                 'samples_per_second': float(samples_per_second),

@@ -165,7 +165,11 @@ def _generate_qat_comparison(method, quant_types):
                 model_sizes[qt] = os.path.getsize(model_dir / "model.safetensors") / (1024 * 1024)
 
     plotter = QuantizationPlotter(output_dir)
-    chart_path = plotter.create_qat_comparison_plot(all_results, method, model_sizes=model_sizes)
+    memory_usages = {}
+    for qt in quant_types:
+        if qt in all_results:
+            memory_usages[qt] = all_results[qt].get('memory_usage_mb', 0)
+    chart_path = plotter.create_qat_comparison_plot(all_results, method, model_sizes=model_sizes, memory_usages=memory_usages)
     print(f"\nQAT {method.upper()} comparison chart saved to: {chart_path}")
 
 
