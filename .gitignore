@@ -19,6 +19,7 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+finetuned-model/
 
 outputs/
 *.pth
@@ -61,3 +62,5 @@ data/
 
 .DS_Store
 Thumbs.db
+finetuned-model/indobert-fp32-smsa-3label-finetuned/
+.hf_cache/
