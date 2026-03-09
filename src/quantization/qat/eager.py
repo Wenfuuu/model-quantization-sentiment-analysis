@@ -405,61 +405,12 @@ class EagerQATTrainer:
 
         return model_int4_onnx
 
-    def evaluate_onnx(self, onnx_model_path=None, dataset_path=None):
-        import onnxruntime as ort
-
-        if onnx_model_path is None:
-            save_path = str(self.config.save_dir)
-            if self.quantization_type == "int8":
-                onnx_model_path = os.path.join(save_path, "model_qat_int8.onnx")
-            elif self.quantization_type == "int4":
-                onnx_model_path = os.path.join(save_path, "model_qat_int4.onnx")
-            else:
-                onnx_model_path = os.path.join(save_path, "model_qat_fp16.onnx")
-
-        test_file = dataset_path if dataset_path else str(self.config.test_file)
-
-        print("=" * 70)
-        print(f"Evaluating {self.quantization_type.upper()} ONNX Model")
-        print(f"Dataset: {test_file}")
-        print("=" * 70)
-
-        sess_options = ort.SessionOptions()
-        if self.quantization_type == "fp16":
-            sess_options.graph_optimization_level = (
-                ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
-            )
-        else:
-            sess_options.graph_optimization_level = (
-                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            )
-
-        import psutil
-        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
-
-        session = ort.InferenceSession(
-            onnx_model_path,
-            sess_options,
-            providers=['CPUExecutionProvider'],
-        )
-        print(f"ONNX model loaded: {onnx_model_path}")
-        print(f"Provider: {session.get_providers()}")
-
-        tokenized_dataset = self._load_and_preprocess(
-            splits={'test': test_file}
-        )
-
+    def _run_onnx_inference(self, session, tokenized_dataset, num_runs=20, warmup_runs=5):
         num_samples = len(tokenized_dataset['test'])
-        print(f"Test samples: {num_samples:,}")
-
         predictions = []
         true_labels = []
         confidences = []
         per_sample_latencies = []
-        num_runs = 20
-        warmup_runs = 5
-
-        print(f"\nRunning inference on test set ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
 
         for i in range(num_samples):
             sample = tokenized_dataset['test'][i]
@@ -493,17 +444,16 @@ class EagerQATTrainer:
             if (i + 1) % 100 == 0:
                 print(f"  Processed {i + 1}/{num_samples} samples...")
 
-        predictions = np.array(predictions)
-        true_labels = np.array(true_labels)
+        return np.array(predictions), np.array(true_labels), confidences, per_sample_latencies
 
+    def _compute_onnx_metrics(self, predictions, true_labels, confidences, per_sample_latencies):
         accuracy = accuracy_score(true_labels, predictions)
         precision, recall, f1, _ = precision_recall_fscore_support(
             true_labels, predictions, average='weighted'
         )
-
         total_time = sum(per_sample_latencies)
+        num_samples = len(true_labels)
         samples_per_second = num_samples / total_time if total_time > 0 else 0
-
         latency_stats = {
             'mean': float(np.mean(per_sample_latencies)),
             'std': float(np.std(per_sample_latencies)),
@@ -511,65 +461,178 @@ class EagerQATTrainer:
             'max': float(np.max(per_sample_latencies)),
             'median': float(np.median(per_sample_latencies)),
         }
+        label_names = [
+            self.config.id2label[i].capitalize()
+            for i in range(self.config.num_labels)
+        ]
+        report_dict = classification_report(
+            true_labels, predictions, target_names=label_names,
+            output_dict=True, zero_division=0,
+        )
+        metrics = {
+            'accuracy': float(accuracy),
+            'precision': float(precision),
+            'recall': float(recall),
+            'f1': float(f1),
+            'avg_confidence': float(np.mean(confidences)),
+            'total_samples': int(num_samples),
+            'total_time_seconds': float(total_time),
+            'samples_per_second': float(samples_per_second),
+        }
+        return metrics, latency_stats, report_dict
 
-        print("\n" + "=" * 70)
-        print(f"{self.quantization_type.upper()} ONNX Model Results")
-        print("=" * 70)
-        print(f"  Accuracy:  {accuracy:.4f}")
-        print(f"  Precision: {precision:.4f}")
-        print(f"  Recall:    {recall:.4f}")
-        print(f"  F1 Score:  {f1:.4f}")
-        print(f"  Mean Latency: {latency_stats['mean']*1000:.2f} ms/sample")
-        print("=" * 70)
-        print(f"\nTotal time: {total_time:.2f}s")
-        print(f"Samples/second: {samples_per_second:.2f}")
+    def _save_confusion_matrix(self, true_labels, predictions, label_names, title, save_path):
+        cm = confusion_matrix(true_labels, predictions)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(
+            cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=label_names, yticklabels=label_names,
+        )
+        plt.xlabel('Predicted Labels')
+        plt.ylabel('True Labels')
+        plt.title(title)
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300)
+        plt.close()
+        return cm
 
+    def evaluate_onnx(self, onnx_model_path=None, dataset_path=None):
+        import onnxruntime as ort
+        import psutil
+
+        if onnx_model_path is None:
+            save_path = str(self.config.save_dir)
+            if self.quantization_type == "int8":
+                onnx_model_path = os.path.join(save_path, "model_qat_int8.onnx")
+            elif self.quantization_type == "int4":
+                onnx_model_path = os.path.join(save_path, "model_qat_int4.onnx")
+            else:
+                onnx_model_path = os.path.join(save_path, "model_qat_fp16.onnx")
+
+        test_file = dataset_path if dataset_path else str(self.config.test_file)
+        save_path = str(self.config.save_dir)
+        fp32_onnx_path = os.path.join(save_path, "model_qat.onnx")
+        results_dir = str(self.config.results_dir)
+        os.makedirs(results_dir, exist_ok=True)
+        num_runs = 20
+        warmup_runs = 5
         label_names = [
             self.config.id2label[i].capitalize()
             for i in range(self.config.num_labels)
         ]
 
-        print("\nClassification Report:")
-        print(
-            classification_report(
-                true_labels, predictions, target_names=label_names
+        print("=" * 70)
+        print(f"Evaluating {self.quantization_type.upper()} ONNX Model (with FP32 Baseline)")
+        print(f"Dataset: {test_file}")
+        print("=" * 70)
+
+        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+
+        tokenized_dataset = self._load_and_preprocess(
+            splits={'test': test_file}
+        )
+        num_samples = len(tokenized_dataset['test'])
+        print(f"Test samples: {num_samples:,}")
+
+        print(f"\n{'=' * 70}")
+        print("FP32 ONNX Baseline Evaluation")
+        print(f"{'=' * 70}")
+
+        fp32_sess_options = ort.SessionOptions()
+        fp32_sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        fp32_session = ort.InferenceSession(
+            fp32_onnx_path, fp32_sess_options,
+            providers=['CPUExecutionProvider'],
+        )
+        print(f"FP32 ONNX model loaded: {fp32_onnx_path}")
+
+        print(f"\nRunning FP32 inference ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
+        fp32_preds, fp32_labels, fp32_confidences, fp32_latencies = self._run_onnx_inference(
+            fp32_session, tokenized_dataset, num_runs, warmup_runs
+        )
+        fp32_metrics, fp32_latency_stats, fp32_report = self._compute_onnx_metrics(
+            fp32_preds, fp32_labels, fp32_confidences, fp32_latencies
+        )
+
+        print(f"\nFP32 ONNX Baseline Results:")
+        print(f"  Accuracy:  {fp32_metrics['accuracy']:.4f}")
+        print(f"  Precision: {fp32_metrics['precision']:.4f}")
+        print(f"  Recall:    {fp32_metrics['recall']:.4f}")
+        print(f"  F1 Score:  {fp32_metrics['f1']:.4f}")
+        print(f"  Mean Latency: {fp32_latency_stats['mean']*1000:.2f} ms/sample")
+
+        print("\nFP32 Classification Report:")
+        print(classification_report(fp32_labels, fp32_preds, target_names=label_names))
+
+        fp32_cm_path = os.path.join(results_dir, 'confusion_matrix_fp32_eager.png')
+        self._save_confusion_matrix(
+            fp32_labels, fp32_preds, label_names,
+            'Confusion Matrix - FP32 ONNX Baseline (Eager)', fp32_cm_path,
+        )
+        print(f"FP32 confusion matrix saved to: {fp32_cm_path}")
+
+        del fp32_session
+
+        print(f"\n{'=' * 70}")
+        print(f"{self.quantization_type.upper()} ONNX Quantized Evaluation")
+        print(f"{'=' * 70}")
+
+        sess_options = ort.SessionOptions()
+        if self.quantization_type == "fp16":
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
             )
+        else:
+            sess_options.graph_optimization_level = (
+                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            )
+
+        session = ort.InferenceSession(
+            onnx_model_path, sess_options,
+            providers=['CPUExecutionProvider'],
+        )
+        print(f"Quantized ONNX model loaded: {onnx_model_path}")
+        print(f"Provider: {session.get_providers()}")
+
+        print(f"\nRunning {self.quantization_type.upper()} inference ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
+        q_preds, q_labels, q_confidences, q_latencies = self._run_onnx_inference(
+            session, tokenized_dataset, num_runs, warmup_runs
+        )
+        q_metrics, q_latency_stats, q_report = self._compute_onnx_metrics(
+            q_preds, q_labels, q_confidences, q_latencies
         )
 
-        cm = confusion_matrix(true_labels, predictions)
+        print(f"\n{self.quantization_type.upper()} ONNX Results:")
+        print(f"  Accuracy:  {q_metrics['accuracy']:.4f}")
+        print(f"  Precision: {q_metrics['precision']:.4f}")
+        print(f"  Recall:    {q_metrics['recall']:.4f}")
+        print(f"  F1 Score:  {q_metrics['f1']:.4f}")
+        print(f"  Mean Latency: {q_latency_stats['mean']*1000:.2f} ms/sample")
 
-        results_dir = str(self.config.results_dir)
-        os.makedirs(results_dir, exist_ok=True)
+        print(f"\n{self.quantization_type.upper()} Classification Report:")
+        print(classification_report(q_labels, q_preds, target_names=label_names))
 
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(
-            cm,
-            annot=True,
-            fmt='d',
-            cmap='Blues',
-            xticklabels=label_names,
-            yticklabels=label_names,
-        )
-        plt.xlabel('Predicted Labels')
-        plt.ylabel('True Labels')
-        plt.title(f'Confusion Matrix - {self.quantization_type.upper()} ONNX')
-        plt.tight_layout()
-        cm_path = os.path.join(
+        q_cm_path = os.path.join(
             results_dir,
             f'confusion_matrix_{self.quantization_type}_eager.png',
         )
-        plt.savefig(cm_path, dpi=300)
-        plt.close()
-
-        report_dict = classification_report(
-            true_labels,
-            predictions,
-            target_names=label_names,
-            output_dict=True,
-            zero_division=0,
+        self._save_confusion_matrix(
+            q_labels, q_preds, label_names,
+            f'Confusion Matrix - {self.quantization_type.upper()} ONNX (Eager)', q_cm_path,
         )
 
-        import psutil
+        print(f"\n{'=' * 70}")
+        print("FP32 vs Quantized Comparison")
+        print(f"{'=' * 70}")
+        print(f"  FP32 Accuracy:     {fp32_metrics['accuracy']:.4f}")
+        print(f"  {self.quantization_type.upper()} Accuracy:  {q_metrics['accuracy']:.4f}")
+        print(f"  Accuracy Delta:    {q_metrics['accuracy'] - fp32_metrics['accuracy']:+.4f}")
+        print(f"  FP32 F1:           {fp32_metrics['f1']:.4f}")
+        print(f"  {self.quantization_type.upper()} F1:        {q_metrics['f1']:.4f}")
+        print(f"  F1 Delta:          {q_metrics['f1'] - fp32_metrics['f1']:+.4f}")
+        print(f"  FP32 Latency:      {fp32_latency_stats['mean']*1000:.2f} ms")
+        print(f"  {self.quantization_type.upper()} Latency:   {q_latency_stats['mean']*1000:.2f} ms")
+
         mem_after = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
         memory_usage_mb = mem_after - mem_before
 
@@ -578,19 +641,14 @@ class EagerQATTrainer:
             'method': 'eager',
             'provider': session.get_providers()[0],
             'memory_usage_mb': memory_usage_mb,
-            'overall_metrics': {
-                'accuracy': float(accuracy),
-                'precision': float(precision),
-                'recall': float(recall),
-                'f1': float(f1),
-                'avg_confidence': float(np.mean(confidences)),
-                'total_samples': int(num_samples),
-                'total_time_seconds': float(total_time),
-                'samples_per_second': float(samples_per_second),
-            },
-            'latencies': [float(x) for x in per_sample_latencies],
-            'latency_stats': latency_stats,
-            'classification_report': report_dict,
+            'fp32_metrics': fp32_metrics,
+            'fp32_latency_stats': fp32_latency_stats,
+            'fp32_latencies': [float(x) for x in fp32_latencies],
+            'fp32_classification_report': fp32_report,
+            'overall_metrics': q_metrics,
+            'latencies': [float(x) for x in q_latencies],
+            'latency_stats': q_latency_stats,
+            'classification_report': q_report,
         }
 
         results_path = os.path.join(
@@ -600,7 +658,7 @@ class EagerQATTrainer:
         with open(results_path, 'w') as f:
             json.dump(results_data, f, indent=4)
 
-        print(f"\nConfusion matrix saved to: {cm_path}")
+        print(f"\nConfusion matrix saved to: {q_cm_path}")
         print(f"Evaluation results saved to: {results_path}")
 
         return results_data
