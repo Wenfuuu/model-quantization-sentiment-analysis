@@ -458,7 +458,7 @@ class FakeQATTrainer:
         print("=" * 70)
 
         import psutil
-        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        process = psutil.Process(os.getpid())
 
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         tokenized_dataset = self._load_and_preprocess(splits={'test': test_file})
@@ -485,9 +485,12 @@ class FakeQATTrainer:
         print("FP32 Baseline Evaluation")
         print(f"{'=' * 70}")
 
+        mem_before_fp32 = process.memory_info().rss / (1024 * 1024)
         fp32_model = AutoModelForSequenceClassification.from_pretrained(
             model_path, num_labels=self.config.num_labels,
         )
+        mem_after_fp32 = process.memory_info().rss / (1024 * 1024)
+        fp32_memory_mb = mem_after_fp32 - mem_before_fp32
         fp32_model.eval()
         print(f"FP32 model loaded from: {model_path}")
         print(f"Number of parameters: {fp32_model.num_parameters():,}")
@@ -545,9 +548,12 @@ class FakeQATTrainer:
         print(f"{self.quantization_type.upper()} Quantized Evaluation")
         print(f"{'=' * 70}")
 
+        mem_before_quant = process.memory_info().rss / (1024 * 1024)
         model = AutoModelForSequenceClassification.from_pretrained(
             model_path, num_labels=self.config.num_labels,
         )
+        mem_after_quant = process.memory_info().rss / (1024 * 1024)
+        quant_memory_mb = mem_after_quant - mem_before_quant
 
         if self.quantization_type == "fp16":
             model = model.half()
@@ -625,8 +631,25 @@ class FakeQATTrainer:
         print(f"  FP32 Latency:      {fp32_latency_stats['mean']*1000:.2f} ms")
         print(f"  {self.quantization_type.upper()} Latency:   {latency_stats['mean']*1000:.2f} ms")
 
-        mem_after = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
-        memory_usage_mb = mem_after - mem_before
+        fp32_results_data = {
+            "model_type": "FP32",
+            "method": "fake",
+            "memory_usage_mb": fp32_memory_mb,
+            "overall_metrics": {
+                "accuracy": float(fp32_accuracy),
+                "precision": float(fp32_precision),
+                "recall": float(fp32_recall),
+                "f1": float(fp32_f1),
+                "avg_confidence": fp32_avg_confidence,
+            },
+            "latencies": [float(x) for x in fp32_latencies],
+            "latency_stats": fp32_latency_stats,
+            "classification_report": fp32_report,
+        }
+
+        fp32_results_path = os.path.join(results_dir, "evaluation_results_fp32_fake.json")
+        with open(fp32_results_path, "w") as f:
+            json.dump(fp32_results_data, f, indent=4)
 
         results_path = os.path.join(
             results_dir,
@@ -637,7 +660,8 @@ class FakeQATTrainer:
                 {
                     "model_type": self.quantization_type.upper(),
                     "method": "fake",
-                    "memory_usage_mb": memory_usage_mb,
+                    "memory_usage_mb": quant_memory_mb,
+                    "fp32_memory_usage_mb": fp32_memory_mb,
                     "fp32_metrics": {
                         "accuracy": float(fp32_accuracy),
                         "precision": float(fp32_precision),
@@ -660,5 +684,6 @@ class FakeQATTrainer:
         print(f"\nFP32 confusion matrix saved to: {fp32_cm_path}")
         print(f"Quantized confusion matrix saved to: {q_cm_path}")
         print(f"Evaluation results saved to: {results_path}")
+        print(f"FP32 results saved to: {fp32_results_path}")
 
         return results

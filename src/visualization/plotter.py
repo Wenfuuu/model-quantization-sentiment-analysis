@@ -146,7 +146,7 @@ class QuantizationPlotter:
     def create_qat_comparison_plot(self, all_results, method_name, model_sizes=None, memory_usages=None):
         quant_labels = []
         quant_keys = []
-        for k in ['int8', 'fp16', 'int4']:
+        for k in ['fp32', 'fp16', 'int8', 'int4']:
             if k in all_results:
                 quant_keys.append(k)
                 quant_labels.append(k.upper())
@@ -154,7 +154,7 @@ class QuantizationPlotter:
         if len(quant_keys) < 2:
             return None
 
-        colors_map = {'int8': '#2ecc71', 'fp16': '#9b59b6', 'int4': '#e74c3c'}
+        colors_map = {'fp32': '#3498db', 'int8': '#2ecc71', 'fp16': '#9b59b6', 'int4': '#e74c3c'}
         colors = [colors_map[k] for k in quant_keys]
 
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))

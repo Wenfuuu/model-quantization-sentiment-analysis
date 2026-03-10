@@ -526,7 +526,7 @@ class EagerQATTrainer:
         print(f"Dataset: {test_file}")
         print("=" * 70)
 
-        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        process = psutil.Process(os.getpid())
 
         tokenized_dataset = self._load_and_preprocess(
             splits={'test': test_file}
@@ -538,12 +538,15 @@ class EagerQATTrainer:
         print("FP32 ONNX Baseline Evaluation")
         print(f"{'=' * 70}")
 
+        mem_before_fp32 = process.memory_info().rss / (1024 * 1024)
         fp32_sess_options = ort.SessionOptions()
         fp32_sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         fp32_session = ort.InferenceSession(
             fp32_onnx_path, fp32_sess_options,
             providers=['CPUExecutionProvider'],
         )
+        mem_after_fp32 = process.memory_info().rss / (1024 * 1024)
+        fp32_memory_mb = mem_after_fp32 - mem_before_fp32
         print(f"FP32 ONNX model loaded: {fp32_onnx_path}")
 
         print(f"\nRunning FP32 inference ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
@@ -587,10 +590,13 @@ class EagerQATTrainer:
                 ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
 
+        mem_before_quant = process.memory_info().rss / (1024 * 1024)
         session = ort.InferenceSession(
             onnx_model_path, sess_options,
             providers=['CPUExecutionProvider'],
         )
+        mem_after_quant = process.memory_info().rss / (1024 * 1024)
+        quant_memory_mb = mem_after_quant - mem_before_quant
         print(f"Quantized ONNX model loaded: {onnx_model_path}")
         print(f"Provider: {session.get_providers()}")
 
@@ -633,14 +639,27 @@ class EagerQATTrainer:
         print(f"  FP32 Latency:      {fp32_latency_stats['mean']*1000:.2f} ms")
         print(f"  {self.quantization_type.upper()} Latency:   {q_latency_stats['mean']*1000:.2f} ms")
 
-        mem_after = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
-        memory_usage_mb = mem_after - mem_before
+        fp32_results_data = {
+            'model_type': 'FP32',
+            'method': 'eager',
+            'provider': 'CPUExecutionProvider',
+            'memory_usage_mb': fp32_memory_mb,
+            'overall_metrics': fp32_metrics,
+            'latencies': [float(x) for x in fp32_latencies],
+            'latency_stats': fp32_latency_stats,
+            'classification_report': fp32_report,
+        }
+
+        fp32_results_path = os.path.join(results_dir, 'evaluation_results_fp32_eager.json')
+        with open(fp32_results_path, 'w') as f:
+            json.dump(fp32_results_data, f, indent=4)
 
         results_data = {
             'model_type': self.quantization_type.upper(),
             'method': 'eager',
             'provider': session.get_providers()[0],
-            'memory_usage_mb': memory_usage_mb,
+            'memory_usage_mb': quant_memory_mb,
+            'fp32_memory_usage_mb': fp32_memory_mb,
             'fp32_metrics': fp32_metrics,
             'fp32_latency_stats': fp32_latency_stats,
             'fp32_latencies': [float(x) for x in fp32_latencies],
@@ -660,5 +679,6 @@ class EagerQATTrainer:
 
         print(f"\nConfusion matrix saved to: {q_cm_path}")
         print(f"Evaluation results saved to: {results_path}")
+        print(f"FP32 results saved to: {fp32_results_path}")
 
         return results_data
