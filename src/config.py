@@ -20,6 +20,11 @@ SEEDED_MODEL_DIRS = {
 
 LEGACY_MODEL_DIR = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"
 
+HF_DATASET_PATH = BASE_DIR / "datasets" / "hf_smsa"
+FP32_MODEL_DIR = LEGACY_MODEL_DIR
+PTQ_MODEL_PATH = BASE_DIR / "outputs" / "finetuned-smsa" / "ptq_int8.pth"
+QAT_MODEL_PATH = BASE_DIR / "outputs" / "indobert-qat-int8-smsa" / "qat_trained.pt"
+
 EXPERIMENT_CONFIGS = {
     "original_smsa": {
         "model_id": "indobenchmark/indobert-base-p2",
