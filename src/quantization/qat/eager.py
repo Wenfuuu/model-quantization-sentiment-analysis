@@ -503,7 +503,9 @@ class EagerQATTrainer:
 
         if onnx_model_path is None:
             save_path = str(self.config.save_dir)
-            if self.quantization_type == "int8":
+            if self.quantization_type == "fp32":
+                onnx_model_path = os.path.join(save_path, "model_qat.onnx")
+            elif self.quantization_type == "int8":
                 onnx_model_path = os.path.join(save_path, "model_qat_int8.onnx")
             elif self.quantization_type == "int4":
                 onnx_model_path = os.path.join(save_path, "model_qat_int4.onnx")
@@ -576,6 +578,23 @@ class EagerQATTrainer:
         print(f"FP32 confusion matrix saved to: {fp32_cm_path}")
 
         del fp32_session
+
+        if self.quantization_type == "fp32":
+            fp32_results_data = {
+                'model_type': 'FP32',
+                'method': 'eager',
+                'provider': 'CPUExecutionProvider',
+                'memory_usage_mb': fp32_memory_mb,
+                'overall_metrics': fp32_metrics,
+                'latencies': [float(x) for x in fp32_latencies],
+                'latency_stats': fp32_latency_stats,
+                'classification_report': fp32_report,
+            }
+            fp32_results_path = os.path.join(results_dir, 'evaluation_results_fp32_eager.json')
+            with open(fp32_results_path, 'w') as f:
+                json.dump(fp32_results_data, f, indent=4)
+            print(f"\nFP32 results saved to: {fp32_results_path}")
+            return fp32_results_data
 
         print(f"\n{'=' * 70}")
         print(f"{self.quantization_type.upper()} ONNX Quantized Evaluation")
