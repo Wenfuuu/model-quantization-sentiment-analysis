@@ -37,6 +37,17 @@ def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0):
     config = get_default_config("eager", quant_type, sample_frac=sample_frac)
     trainer = EagerQATTrainer(config, quantization_type=quant_type)
 
+    if quant_type == "fp32":
+        print(f"\n[Step 1/3] Training base model (FP32 eager)...")
+        trainer.train()
+
+        print(f"\n[Step 2/3] Exporting to ONNX...")
+        trainer.export_to_onnx()
+
+        print(f"\n[Step 3/3] Evaluating FP32 ONNX model...")
+        results = trainer.evaluate_onnx(dataset_path=dataset_path)
+        return results
+
     print(f"\n[Step 1/4] Training with QAT ({quant_type.upper()} eager)...")
     trainer.train()
 
@@ -55,10 +66,16 @@ def run_fake_qat(quant_type, dataset_path=None, sample_frac=1.0):
     config = get_default_config("fake", quant_type, sample_frac=sample_frac)
     trainer = FakeQATTrainer(config, quantization_type=quant_type)
 
-    print(f"\n[Step 1/2] Training with fake QAT ({quant_type.upper()})...")
+    if quant_type == "fp32":
+        print(f"\n[Step 1/2] Training base model (FP32)...")
+    else:
+        print(f"\n[Step 1/2] Training with fake QAT ({quant_type.upper()})...")
     trainer.train()
 
-    print(f"\n[Step 2/2] Evaluating {quant_type.upper()} fake QAT model...")
+    if quant_type == "fp32":
+        print(f"\n[Step 2/2] Evaluating FP32 model...")
+    else:
+        print(f"\n[Step 2/2] Evaluating {quant_type.upper()} fake QAT model...")
     results = trainer.evaluate(dataset_path=dataset_path)
     return results
 
@@ -79,7 +96,7 @@ def interactive_menu():
     print("  [1] FP16")
     print("  [2] INT8")
     print("  [3] INT4")
-    print("  [4] All (FP16 + INT8 + INT4)")
+    print("  [4] All (FP32 + FP16 + INT8 + INT4)")
 
     quant_choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
@@ -97,7 +114,7 @@ def interactive_menu():
     elif quant_choice == "3":
         quant_types = ["int4"]
     else:
-        quant_types = ["fp16", "int8", "int4"]
+        quant_types = ["fp32", "fp16", "int8", "int4"]
 
     print("\n  Select Evaluation Dataset:")
     print(f"  [1] SMSA (test.tsv) - {DATASET_PATHS['smsa']}")
@@ -141,6 +158,33 @@ def _generate_qat_comparison(method, quant_types):
         if data is not None:
             all_results[qt] = data
 
+    if not all_results:
+        print(f"\nSkipping {method.upper()} comparison graph (no results found)")
+        return
+
+    first_data = next(iter(all_results.values()))
+    if 'fp32_metrics' in first_data and 'fp32_latencies' in first_data:
+        all_results['fp32'] = {
+            'overall_metrics': first_data['fp32_metrics'],
+            'latencies': first_data['fp32_latencies'],
+            'latency_stats': first_data.get('fp32_latency_stats', {}),
+            'classification_report': first_data.get('fp32_classification_report', {}),
+            'memory_usage_mb': first_data.get('fp32_memory_usage_mb', 0),
+        }
+
+    if 'fp32' not in all_results:
+        import os
+        output_dir = BASE_DIR / "outputs"
+        for qt in quant_types:
+            if method == "eager":
+                fp32_json = output_dir / f"indobert-qat-{qt}-smsa" / "evaluation_results_fp32_eager.json"
+            else:
+                fp32_json = output_dir / f"indobert-smsa-qat-{qt}-fake" / "evaluation_results_fp32_fake.json"
+            if fp32_json.exists():
+                with open(fp32_json, 'r') as f:
+                    all_results['fp32'] = json.load(f)
+                break
+
     if len(all_results) < 2:
         print(f"\nSkipping {method.upper()} comparison graph (need at least 2 results, found {len(all_results)})")
         return
@@ -156,6 +200,10 @@ def _generate_qat_comparison(method, quant_types):
             onnx_file = model_dir / f"model_qat_{qt}.onnx"
             if onnx_file.exists():
                 model_sizes[qt] = os.path.getsize(onnx_file) / (1024 * 1024)
+            if 'fp32' not in model_sizes:
+                fp32_onnx = model_dir / "model_qat.onnx"
+                if fp32_onnx.exists():
+                    model_sizes['fp32'] = os.path.getsize(fp32_onnx) / (1024 * 1024)
         else:
             model_dir = output_dir / f"indobert-smsa-qat-{qt}-fake"
             pth_file = model_dir / f"model_{qt}.pth"
@@ -163,12 +211,18 @@ def _generate_qat_comparison(method, quant_types):
                 model_sizes[qt] = os.path.getsize(pth_file) / (1024 * 1024)
             elif (model_dir / "model.safetensors").exists():
                 model_sizes[qt] = os.path.getsize(model_dir / "model.safetensors") / (1024 * 1024)
+            if 'fp32' not in model_sizes:
+                fp32_safetensors = model_dir / "model.safetensors"
+                if fp32_safetensors.exists():
+                    model_sizes['fp32'] = os.path.getsize(fp32_safetensors) / (1024 * 1024)
 
     plotter = QuantizationPlotter(output_dir)
     memory_usages = {}
     for qt in quant_types:
         if qt in all_results:
             memory_usages[qt] = all_results[qt].get('memory_usage_mb', 0)
+    if 'fp32' in all_results:
+        memory_usages['fp32'] = all_results['fp32'].get('memory_usage_mb', 0)
     chart_path = plotter.create_qat_comparison_plot(all_results, method, model_sizes=model_sizes, memory_usages=memory_usages)
     print(f"\nQAT {method.upper()} comparison chart saved to: {chart_path}")
 
