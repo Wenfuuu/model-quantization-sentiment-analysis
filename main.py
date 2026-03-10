@@ -1,9 +1,15 @@
 import sys
 import os
+import tempfile
 from pathlib import Path
 
-hf_cache_dir = Path.home() / ".cache" / "huggingface"
-hf_cache_dir.mkdir(parents=True, exist_ok=True)
+try:
+    hf_cache_dir = Path.home() / ".cache" / "huggingface"
+    hf_cache_dir.mkdir(parents=True, exist_ok=True)
+except (PermissionError, FileNotFoundError):
+    hf_cache_dir = Path(tempfile.gettempdir()) / "huggingface"
+    hf_cache_dir.mkdir(parents=True, exist_ok=True)
+
 os.environ["HF_HOME"] = str(hf_cache_dir)
 
 sys.path.insert(0, str(Path(__file__).parent))
