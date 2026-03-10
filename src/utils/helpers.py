@@ -5,7 +5,6 @@ import torch
 DEFAULT_SEED = 42
 
 def set_seed(seed: int = DEFAULT_SEED) -> None:
-    """Set all global random seeds for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

@@ -27,20 +27,18 @@ def load_fp32(model_dir: Path, device: torch.device) -> AutoModelForSequenceClas
 
 def load_ptq(base_model_dir: Path, state_path: Path, device: torch.device) -> AutoModelForSequenceClassification:
     model = AutoModelForSequenceClassification.from_pretrained(base_model_dir, num_labels=len(LABELS))
-    state = torch.load(state_path, map_location=device)
+    state = torch.load(state_path, map_location="cpu")
     model.load_state_dict(state, strict=False)
     model.eval()
     model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
-    model.to(device)
     return model
 
 def load_qat(base_model_dir: Path, state_path: Path, device: torch.device) -> AutoModelForSequenceClassification:
     model = AutoModelForSequenceClassification.from_pretrained(base_model_dir, num_labels=len(LABELS))
-    state = torch.load(state_path, map_location=device)
+    state = torch.load(state_path, map_location="cpu")
     model.load_state_dict(state, strict=False)
     model.eval()
     model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
-    model.to(device)
     return model
 
 def main():
@@ -64,16 +62,18 @@ def main():
     ptq = load_ptq(args.fp32_dir, args.ptq_path, device)
     qat = load_qat(args.fp32_dir, args.qat_path, device)
 
+    _cpu = torch.device("cpu")
+
     print("\nEvaluating accuracy...")
     acc_fp32 = evaluate_accuracy(fp32, dataloader, device)
-    acc_ptq = evaluate_accuracy(ptq, dataloader, device)
-    acc_qat = evaluate_accuracy(qat, dataloader, device)
+    acc_ptq = evaluate_accuracy(ptq, dataloader, _cpu)
+    acc_qat = evaluate_accuracy(qat, dataloader, _cpu)
 
     print("\nMeasuring latency (ms)...")
     sample = dataset[0]
     lat_fp32 = evaluate_latency(fp32, sample, runs=args.runs, warmup=args.warmup, device=device)
-    lat_ptq = evaluate_latency(ptq, sample, runs=args.runs, warmup=args.warmup, device=device)
-    lat_qat = evaluate_latency(qat, sample, runs=args.runs, warmup=args.warmup, device=device)
+    lat_ptq = evaluate_latency(ptq, sample, runs=args.runs, warmup=args.warmup, device=_cpu)
+    lat_qat = evaluate_latency(qat, sample, runs=args.runs, warmup=args.warmup, device=_cpu)
 
     size_fp32 = (args.fp32_dir / "model.safetensors").stat().st_size / 1024 / 1024 if (args.fp32_dir / "model.safetensors").exists() else 0.0
     size_ptq = args.ptq_path.stat().st_size / 1024 / 1024 if args.ptq_path.exists() else 0.0

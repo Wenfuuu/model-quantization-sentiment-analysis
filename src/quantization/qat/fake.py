@@ -401,6 +401,51 @@ class FakeQATTrainer:
 
         return train_result
 
+    def _measure_latency(self, model, tokenized_dataset, num_runs=20, warmup_runs=5):
+        device = next(model.parameters()).device
+        num_samples = len(tokenized_dataset["test"])
+        per_sample_latencies = []
+        with torch.no_grad():
+            for i in range(num_samples):
+                sample = tokenized_dataset["test"][i]
+                input_ids = torch.tensor([sample["input_ids"]]).to(device)
+                attention_mask = torch.tensor([sample["attention_mask"]]).to(device)
+                for _ in range(warmup_runs):
+                    model(input_ids=input_ids, attention_mask=attention_mask)
+                sample_latencies = []
+                for _ in range(num_runs):
+                    start_time = time.time()
+                    model(input_ids=input_ids, attention_mask=attention_mask)
+                    elapsed = time.time() - start_time
+                    sample_latencies.append(elapsed)
+                per_sample_latencies.append(float(np.mean(sample_latencies)))
+                if (i + 1) % 100 == 0:
+                    print(f"  Processed {i + 1}/{num_samples} samples...")
+        return per_sample_latencies
+
+    def _compute_latency_stats(self, per_sample_latencies):
+        return {
+            'mean': float(np.mean(per_sample_latencies)),
+            'std': float(np.std(per_sample_latencies)),
+            'min': float(np.min(per_sample_latencies)),
+            'max': float(np.max(per_sample_latencies)),
+            'median': float(np.median(per_sample_latencies)),
+        }
+
+    def _save_confusion_matrix(self, y_true, y_pred, label_names, title, save_path):
+        cm = confusion_matrix(y_true, y_pred)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(
+            cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=label_names, yticklabels=label_names,
+        )
+        plt.xlabel("Predicted Labels")
+        plt.ylabel("True Labels")
+        plt.title(title)
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300)
+        plt.close()
+
     def evaluate(self, model_path=None, dataset_path=None):
         if model_path is None:
             model_path = str(self.config.save_dir)
@@ -408,19 +453,107 @@ class FakeQATTrainer:
         test_file = dataset_path if dataset_path else str(self.config.test_file)
 
         print("=" * 70)
-        print(f"Evaluating {self.quantization_type.upper()} Fake QAT Model")
+        print(f"Evaluating {self.quantization_type.upper()} Fake QAT Model (with FP32 Baseline)")
         print(f"Dataset: {test_file}")
         print("=" * 70)
 
         import psutil
-        mem_before = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        process = psutil.Process(os.getpid())
 
         tokenizer = AutoTokenizer.from_pretrained(model_path)
+        tokenized_dataset = self._load_and_preprocess(splits={'test': test_file})
+        num_samples = len(tokenized_dataset["test"])
+        results_dir = str(self.config.results_dir)
+        os.makedirs(results_dir, exist_ok=True)
+        label_names = [
+            self.config.id2label[i].capitalize()
+            for i in range(self.config.num_labels)
+        ]
+        num_runs = 20
+        warmup_runs = 5
 
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_path,
-            num_labels=self.config.num_labels,
+        eval_args = TrainingArguments(
+            output_dir=results_dir,
+            overwrite_output_dir=True,
+            per_device_eval_batch_size=self.config.batch_size,
+            fp16=False,
+            no_cuda=True,
+            report_to="none",
         )
+
+        print(f"\n{'=' * 70}")
+        print("FP32 Baseline Evaluation")
+        print(f"{'=' * 70}")
+
+        mem_before_fp32 = process.memory_info().rss / (1024 * 1024)
+        fp32_model = AutoModelForSequenceClassification.from_pretrained(
+            model_path, num_labels=self.config.num_labels,
+        )
+        mem_after_fp32 = process.memory_info().rss / (1024 * 1024)
+        fp32_memory_mb = mem_after_fp32 - mem_before_fp32
+        fp32_model.eval()
+        print(f"FP32 model loaded from: {model_path}")
+        print(f"Number of parameters: {fp32_model.num_parameters():,}")
+
+        fp32_trainer = Trainer(
+            model=fp32_model,
+            args=eval_args,
+            eval_dataset=tokenized_dataset["test"],
+            compute_metrics=self._compute_metrics,
+            processing_class=tokenizer,
+        )
+
+        print("Running FP32 evaluation on test set...")
+        fp32_eval_results = fp32_trainer.evaluate()
+        fp32_pred_output = fp32_trainer.predict(tokenized_dataset["test"])
+        fp32_preds = fp32_pred_output.predictions.argmax(-1)
+        fp32_true = fp32_pred_output.label_ids
+        fp32_logits = fp32_pred_output.predictions
+        fp32_probs = np.exp(fp32_logits) / np.sum(np.exp(fp32_logits), axis=1, keepdims=True)
+        fp32_avg_confidence = float(np.mean(np.max(fp32_probs, axis=1)))
+
+        print(f"\nMeasuring FP32 per-sample inference latency ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
+        fp32_latencies = self._measure_latency(fp32_model, tokenized_dataset, num_runs, warmup_runs)
+        fp32_latency_stats = self._compute_latency_stats(fp32_latencies)
+
+        fp32_accuracy = accuracy_score(fp32_true, fp32_preds)
+        fp32_precision, fp32_recall, fp32_f1, _ = precision_recall_fscore_support(
+            fp32_true, fp32_preds, average='weighted'
+        )
+
+        print(f"\nFP32 Baseline Results:")
+        print(f"  Accuracy:  {fp32_accuracy:.4f}")
+        print(f"  Precision: {fp32_precision:.4f}")
+        print(f"  Recall:    {fp32_recall:.4f}")
+        print(f"  F1 Score:  {fp32_f1:.4f}")
+        print(f"  Mean Latency: {fp32_latency_stats['mean']*1000:.2f} ms/sample")
+
+        print("\nFP32 Classification Report:")
+        print(classification_report(fp32_true, fp32_preds, target_names=label_names))
+
+        fp32_cm_path = os.path.join(results_dir, "confusion_matrix_fp32_fake.png")
+        self._save_confusion_matrix(
+            fp32_true, fp32_preds, label_names,
+            "Confusion Matrix - FP32 Baseline (Fake QAT)", fp32_cm_path,
+        )
+
+        fp32_report = classification_report(
+            fp32_true, fp32_preds, target_names=label_names,
+            output_dict=True, zero_division=0,
+        )
+
+        del fp32_model, fp32_trainer
+
+        print(f"\n{'=' * 70}")
+        print(f"{self.quantization_type.upper()} Quantized Evaluation")
+        print(f"{'=' * 70}")
+
+        mem_before_quant = process.memory_info().rss / (1024 * 1024)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_path, num_labels=self.config.num_labels,
+        )
+        mem_after_quant = process.memory_info().rss / (1024 * 1024)
+        quant_memory_mb = mem_after_quant - mem_before_quant
 
         if self.quantization_type == "fp16":
             model = model.half()
@@ -432,26 +565,8 @@ class FakeQATTrainer:
             print("Applied INT4 symmetric weight-only quantization")
 
         model.eval()
-
-        print(f"Model loaded from: {model_path}")
+        print(f"Quantized model loaded from: {model_path}")
         print(f"Number of parameters: {model.num_parameters():,}")
-
-        tokenized_dataset = self._load_and_preprocess(
-            splits={'test': test_file}
-        )
-
-        print(f"Test samples: {len(tokenized_dataset['test']):,}")
-
-        results_dir = str(self.config.results_dir)
-
-        eval_args = TrainingArguments(
-            output_dir=results_dir,
-            overwrite_output_dir=True,
-            per_device_eval_batch_size=self.config.batch_size,
-            fp16=False,
-            no_cuda=True,
-            report_to="none",
-        )
 
         trainer = Trainer(
             model=model,
@@ -462,16 +577,9 @@ class FakeQATTrainer:
         )
 
         print(
-            f"Running evaluation on test set"
-            f" ({self.quantization_type.upper()} fake QAT)..."
+            f"Running {self.quantization_type.upper()} evaluation on test set..."
         )
         results = trainer.evaluate()
-
-        print(f"\nTest Set Results ({self.quantization_type.upper()} Fake QAT)")
-        print("=" * 70)
-        for k, v in results.items():
-            print(f"{k}: {v:.4f}")
-        print("=" * 70)
 
         predictions_output = trainer.predict(tokenized_dataset["test"])
         y_pred = predictions_output.predictions.argmax(-1)
@@ -480,110 +588,102 @@ class FakeQATTrainer:
         probs_np = np.exp(logits_np) / np.sum(np.exp(logits_np), axis=1, keepdims=True)
         avg_confidence = float(np.mean(np.max(probs_np, axis=1)))
 
-        num_runs = 20
-        warmup_runs = 5
-        print(f"\nMeasuring per-sample inference latency ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
-        device = next(model.parameters()).device
-        per_sample_latencies = []
-        num_samples = len(tokenized_dataset["test"])
-
-        with torch.no_grad():
-            for i in range(num_samples):
-                sample = tokenized_dataset["test"][i]
-                input_ids = torch.tensor([sample["input_ids"]]).to(device)
-                attention_mask = torch.tensor([sample["attention_mask"]]).to(device)
-
-                for _ in range(warmup_runs):
-                    model(input_ids=input_ids, attention_mask=attention_mask)
-
-                sample_latencies = []
-                for _ in range(num_runs):
-                    start_time = time.time()
-                    model(input_ids=input_ids, attention_mask=attention_mask)
-                    elapsed = time.time() - start_time
-                    sample_latencies.append(elapsed)
-
-                per_sample_latencies.append(float(np.mean(sample_latencies)))
-
-                if (i + 1) % 100 == 0:
-                    print(f"  Processed {i + 1}/{num_samples} samples...")
-
-        latency_stats = {
-            'mean': float(np.mean(per_sample_latencies)),
-            'std': float(np.std(per_sample_latencies)),
-            'min': float(np.min(per_sample_latencies)),
-            'max': float(np.max(per_sample_latencies)),
-            'median': float(np.median(per_sample_latencies)),
-        }
+        print(f"\nMeasuring {self.quantization_type.upper()} per-sample inference latency ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
+        per_sample_latencies = self._measure_latency(model, tokenized_dataset, num_runs, warmup_runs)
+        latency_stats = self._compute_latency_stats(per_sample_latencies)
         print(f"Mean Latency: {latency_stats['mean']*1000:.2f} ms/sample")
 
-        label_names = [
-            self.config.id2label[i].capitalize()
-            for i in range(self.config.num_labels)
-        ]
-        cm = confusion_matrix(y_true, y_pred)
-
-        os.makedirs(results_dir, exist_ok=True)
-
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(
-            cm,
-            annot=True,
-            fmt="d",
-            cmap="Blues",
-            xticklabels=label_names,
-            yticklabels=label_names,
+        q_accuracy = accuracy_score(y_true, y_pred)
+        q_precision, q_recall, q_f1, _ = precision_recall_fscore_support(
+            y_true, y_pred, average='weighted'
         )
-        plt.xlabel("Predicted Labels")
-        plt.ylabel("True Labels")
-        plt.title(
-            f"Confusion Matrix - {self.quantization_type.upper()} Fake QAT"
-        )
-        plt.tight_layout()
-        cm_path = os.path.join(
+
+        print(f"\n{self.quantization_type.upper()} Results:")
+        for k, v in results.items():
+            print(f"  {k}: {v:.4f}")
+
+        print(f"\n{self.quantization_type.upper()} Classification Report:")
+        print(classification_report(y_true, y_pred, target_names=label_names))
+
+        q_cm_path = os.path.join(
             results_dir,
             f"confusion_matrix_{self.quantization_type}_fake.png",
         )
-        plt.savefig(cm_path, dpi=300)
-        plt.close()
-
-        report_dict = classification_report(
-            y_true,
-            y_pred,
-            target_names=label_names,
-            output_dict=True,
-            zero_division=0,
+        self._save_confusion_matrix(
+            y_true, y_pred, label_names,
+            f"Confusion Matrix - {self.quantization_type.upper()} Fake QAT", q_cm_path,
         )
 
-        print("\nDetailed Classification Report")
-        print("=" * 70)
-        print(classification_report(y_true, y_pred, target_names=label_names))
-        print("=" * 70)
+        q_report = classification_report(
+            y_true, y_pred, target_names=label_names,
+            output_dict=True, zero_division=0,
+        )
+
+        print(f"\n{'=' * 70}")
+        print("FP32 vs Quantized Comparison")
+        print(f"{'=' * 70}")
+        print(f"  FP32 Accuracy:     {fp32_accuracy:.4f}")
+        print(f"  {self.quantization_type.upper()} Accuracy:  {q_accuracy:.4f}")
+        print(f"  Accuracy Delta:    {q_accuracy - fp32_accuracy:+.4f}")
+        print(f"  FP32 F1:           {fp32_f1:.4f}")
+        print(f"  {self.quantization_type.upper()} F1:        {q_f1:.4f}")
+        print(f"  F1 Delta:          {q_f1 - fp32_f1:+.4f}")
+        print(f"  FP32 Latency:      {fp32_latency_stats['mean']*1000:.2f} ms")
+        print(f"  {self.quantization_type.upper()} Latency:   {latency_stats['mean']*1000:.2f} ms")
+
+        fp32_results_data = {
+            "model_type": "FP32",
+            "method": "fake",
+            "memory_usage_mb": fp32_memory_mb,
+            "overall_metrics": {
+                "accuracy": float(fp32_accuracy),
+                "precision": float(fp32_precision),
+                "recall": float(fp32_recall),
+                "f1": float(fp32_f1),
+                "avg_confidence": fp32_avg_confidence,
+            },
+            "latencies": [float(x) for x in fp32_latencies],
+            "latency_stats": fp32_latency_stats,
+            "classification_report": fp32_report,
+        }
+
+        fp32_results_path = os.path.join(results_dir, "evaluation_results_fp32_fake.json")
+        with open(fp32_results_path, "w") as f:
+            json.dump(fp32_results_data, f, indent=4)
 
         results_path = os.path.join(
             results_dir,
             f"evaluation_results_{self.quantization_type}_fake.json",
         )
-        import psutil
-        mem_after = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
-        memory_usage_mb = mem_after - mem_before
-
         with open(results_path, "w") as f:
             json.dump(
                 {
                     "model_type": self.quantization_type.upper(),
                     "method": "fake",
-                    "memory_usage_mb": memory_usage_mb,
+                    "memory_usage_mb": quant_memory_mb,
+                    "fp32_memory_usage_mb": fp32_memory_mb,
+                    "fp32_metrics": {
+                        "accuracy": float(fp32_accuracy),
+                        "precision": float(fp32_precision),
+                        "recall": float(fp32_recall),
+                        "f1": float(fp32_f1),
+                        "avg_confidence": fp32_avg_confidence,
+                    },
+                    "fp32_latency_stats": fp32_latency_stats,
+                    "fp32_latencies": [float(x) for x in fp32_latencies],
+                    "fp32_classification_report": fp32_report,
                     "overall_metrics": {**results, "avg_confidence": avg_confidence},
                     "latencies": [float(x) for x in per_sample_latencies],
                     "latency_stats": latency_stats,
-                    "classification_report": report_dict,
+                    "classification_report": q_report,
                 },
                 f,
                 indent=4,
             )
 
-        print(f"\nConfusion matrix saved to: {cm_path}")
+        print(f"\nFP32 confusion matrix saved to: {fp32_cm_path}")
+        print(f"Quantized confusion matrix saved to: {q_cm_path}")
         print(f"Evaluation results saved to: {results_path}")
+        print(f"FP32 results saved to: {fp32_results_path}")
 
         return results
