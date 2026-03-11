@@ -2,6 +2,7 @@ import os
 import re
 import time
 import json
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -383,7 +384,6 @@ class EagerQATTrainer:
 
     def _quantize_onnx_int4(self, model_fp32_onnx):
         import onnx
-        from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
 
         model_int4_onnx = model_fp32_onnx.replace(".onnx", "_int4.onnx")
 
@@ -391,10 +391,40 @@ class EagerQATTrainer:
         print("Quantizing ONNX Model to INT4 (4-bit MatMul)")
         print("=" * 70)
 
-        onnx_model = onnx.load(model_fp32_onnx)
-        quant = MatMulNBitsQuantizer(onnx_model, block_size=128, is_symmetric=True, bits=4)
-        quant.process()
-        onnx.save(quant.model.model, model_int4_onnx)
+        try:
+            from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
+
+            onnx_model = onnx.load(model_fp32_onnx)
+            quant = MatMulNBitsQuantizer(
+                onnx_model,
+                block_size=128,
+                is_symmetric=True,
+                bits=4,
+            )
+            quant.process()
+            onnx.save(quant.model.model, model_int4_onnx)
+        except ModuleNotFoundError:
+            try:
+                from onnxruntime.quantization import matmul_4bits_quantizer, quant_utils
+            except ImportError as exc:
+                raise ImportError(
+                    "onnxruntime with INT4 quantization support is required."
+                ) from exc
+
+            quant_config = matmul_4bits_quantizer.DefaultWeightOnlyQuantConfig(
+                block_size=128,
+                is_symmetric=True,
+                accuracy_level=4,
+            )
+            quant_model = quant_utils.load_model_with_shape_infer(Path(model_fp32_onnx))
+            quant = matmul_4bits_quantizer.MatMul4BitsQuantizer(
+                quant_model,
+                nodes_to_exclude=None,
+                nodes_to_include=None,
+                algo_config=quant_config,
+            )
+            quant.process()
+            quant.model.save_model_to_file(model_int4_onnx, True)
 
         fp32_size = os.path.getsize(model_fp32_onnx) / (1024 * 1024)
         int4_size = os.path.getsize(model_int4_onnx) / (1024 * 1024)
