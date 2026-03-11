@@ -499,8 +499,6 @@ class EagerQATTrainer:
 
     def evaluate_onnx(self, onnx_model_path=None, dataset_path=None):
         import onnxruntime as ort
-        import psutil
-
         if onnx_model_path is None:
             save_path = str(self.config.save_dir)
             if self.quantization_type == "fp32":
@@ -529,8 +527,6 @@ class EagerQATTrainer:
         print(f"Dataset: {test_file}")
         print("=" * 70)
 
-        process = psutil.Process(os.getpid())
-
         tokenized_dataset = self._load_and_preprocess(
             splits={'test': test_file}
         )
@@ -541,15 +537,13 @@ class EagerQATTrainer:
         print("FP32 ONNX Baseline Evaluation")
         print(f"{'=' * 70}")
 
-        mem_before_fp32 = process.memory_info().rss / (1024 * 1024)
         fp32_sess_options = ort.SessionOptions()
         fp32_sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         fp32_session = ort.InferenceSession(
             fp32_onnx_path, fp32_sess_options,
             providers=['CPUExecutionProvider'],
         )
-        mem_after_fp32 = process.memory_info().rss / (1024 * 1024)
-        fp32_memory_mb = mem_after_fp32 - mem_before_fp32
+        fp32_memory_mb = os.path.getsize(fp32_onnx_path) / (1024 * 1024)
         print(f"FP32 ONNX model loaded: {fp32_onnx_path}")
 
         print(f"\nRunning FP32 inference ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
@@ -610,13 +604,11 @@ class EagerQATTrainer:
                 ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
 
-        mem_before_quant = process.memory_info().rss / (1024 * 1024)
         session = ort.InferenceSession(
             onnx_model_path, sess_options,
             providers=['CPUExecutionProvider'],
         )
-        mem_after_quant = process.memory_info().rss / (1024 * 1024)
-        quant_memory_mb = mem_after_quant - mem_before_quant
+        quant_memory_mb = os.path.getsize(onnx_model_path) / (1024 * 1024)
         print(f"Quantized ONNX model loaded: {onnx_model_path}")
         print(f"Provider: {session.get_providers()}")
 

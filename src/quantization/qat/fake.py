@@ -540,9 +540,6 @@ class FakeQATTrainer:
         print(f"Dataset: {test_file}")
         print("=" * 70)
 
-        import psutil
-        process = psutil.Process(os.getpid())
-
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         tokenized_dataset = self._load_and_preprocess(splits={'test': test_file})
         num_samples = len(tokenized_dataset["test"])
@@ -568,12 +565,10 @@ class FakeQATTrainer:
         print("FP32 Baseline Evaluation")
         print(f"{'=' * 70}")
 
-        mem_before_fp32 = process.memory_info().rss / (1024 * 1024)
         fp32_model = AutoModelForSequenceClassification.from_pretrained(
             model_path, num_labels=self.config.num_labels,
         )
-        mem_after_fp32 = process.memory_info().rss / (1024 * 1024)
-        fp32_memory_mb = mem_after_fp32 - mem_before_fp32
+        fp32_memory_mb = sum(p.nelement() * p.element_size() for p in fp32_model.parameters()) / (1024 * 1024)
         fp32_model.eval()
         print(f"FP32 model loaded from: {model_path}")
         print(f"Number of parameters: {fp32_model.num_parameters():,}")
@@ -653,12 +648,9 @@ class FakeQATTrainer:
         print(f"{self.quantization_type.upper()} Quantized Evaluation")
         print(f"{'=' * 70}")
 
-        mem_before_quant = process.memory_info().rss / (1024 * 1024)
         model = AutoModelForSequenceClassification.from_pretrained(
             model_path, num_labels=self.config.num_labels,
         )
-        mem_after_quant = process.memory_info().rss / (1024 * 1024)
-        quant_memory_mb = mem_after_quant - mem_before_quant
 
         if self.quantization_type == "fp16":
             model = model.half()
@@ -668,6 +660,8 @@ class FakeQATTrainer:
             quantizer = INT4Quantizer(bits=4)
             model = quantizer.quantize_model(model)
             print("Applied INT4 symmetric weight-only quantization")
+
+        quant_memory_mb = sum(p.nelement() * p.element_size() for p in model.parameters()) / (1024 * 1024)
 
         model.eval()
         print(f"Quantized model loaded from: {model_path}")
