@@ -8,7 +8,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.config import BASE_DIR, DATASET_PATHS
 from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
-from src.quantization.qat.fake import FakeQATTrainer
 from src.visualization import QuantizationPlotter
 from scripts.run_xai import generate_qat_divergences
 
@@ -16,12 +15,8 @@ from scripts.run_xai import generate_qat_divergences
 def get_default_config(method, quant_type, sample_frac=1.0):
     output_dir = BASE_DIR / "outputs"
 
-    if method == "eager":
-        save_name = f"indobert-qat-{quant_type}-smsa"
-        results_name = f"indobert-qat-{quant_type}-smsa"
-    else:
-        save_name = f"indobert-smsa-qat-{quant_type}-fake"
-        results_name = f"indobert-smsa-qat-{quant_type}-fake"
+    save_name = f"indobert-qat-{quant_type}-smsa"
+    results_name = f"indobert-qat-{quant_type}-smsa"
 
     return FinetuneQATConfig(
         model_id="indobenchmark/indobert-base-p2",
@@ -68,40 +63,13 @@ def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=
     return results
 
 
-def run_fake_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=False, num_runs=20):
-    config = get_default_config("fake", quant_type, sample_frac=sample_frac)
-    trainer = FakeQATTrainer(config, quantization_type=quant_type)
-
-    if evaluate_only:
-        print(f"\n[Evaluate Only] Evaluating {quant_type.upper()} fake QAT model...")
-        results = trainer.evaluate(dataset_path=dataset_path, num_runs=num_runs)
-        return results
-
-    if quant_type == "fp32":
-        print(f"\n[Step 1/2] Training base model (FP32)...")
-    else:
-        print(f"\n[Step 1/2] Training with fake QAT ({quant_type.upper()})...")
-    trainer.train()
-
-    if quant_type == "fp32":
-        print(f"\n[Step 2/2] Evaluating FP32 model...")
-    else:
-        print(f"\n[Step 2/2] Evaluating {quant_type.upper()} fake QAT model...")
-    results = trainer.evaluate(dataset_path=dataset_path, num_runs=num_runs)
-    return results
-
 
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  QAT (QUANTIZATION-AWARE TRAINING) EXPERIMENT RUNNER")
     print("=" * 60)
 
-    print("\n  Select QAT Method:")
-    print("  [1] Eager (Train -> ONNX Export -> ONNX Quantize -> Eval)")
-    print("  [2] Fake  (Train with fake quant -> HuggingFace save -> Eval)")
-    print("  [3] Both")
-
-    method_choice = input("\n  Enter choice (1/2/3): ").strip()
+    methods = ["eager"]
 
     print("\n  Select Mode:")
     print("  [1] Train + Evaluate")
@@ -118,13 +86,6 @@ def interactive_menu():
 
     quant_choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
-    if method_choice == "1":
-        methods = ["eager"]
-    elif method_choice == "2":
-        methods = ["fake"]
-    else:
-        methods = ["eager", "fake"]
-
     if quant_choice == "1":
         quant_types = ["fp16"]
     elif quant_choice == "2":
@@ -134,25 +95,8 @@ def interactive_menu():
     else:
         quant_types = ["fp32", "fp16", "int8", "int4"]
 
-    print("\n  Select Evaluation Dataset:")
-    print(f"  [1] SMSA (test.tsv) - {DATASET_PATHS['smsa']}")
-    print(f"  [2] Tweets (INA_TweetsPPKM) - {DATASET_PATHS['tweets']}")
-    print("  [3] Default (datasets/test.tsv)")
-
-    dataset_choice = input("\n  Enter choice (1/2/3): ").strip()
-
-    if dataset_choice == "1":
-        dataset_path = str(DATASET_PATHS["smsa"])
-    elif dataset_choice == "2":
-        dataset_path = str(DATASET_PATHS["tweets"])
-    else:
-        dataset_path = None
-
+    dataset_path = str(DATASET_PATHS["smsa"])
     sample_frac = 1.0
-    if dataset_choice == "2":
-        pct_input = input("\n  Berapa persen data Tweets yang digunakan? (1-100, default=100): ").strip()
-        if pct_input:
-            sample_frac = max(1, min(100, int(pct_input))) / 100.0
 
     num_runs_input = input("\n  Inference runs per sample (0 = skip latency, default=20): ").strip()
     if num_runs_input:
@@ -165,10 +109,7 @@ def interactive_menu():
 
 def _load_evaluation_json(method, quant_type):
     output_dir = BASE_DIR / "outputs"
-    if method == "eager":
-        json_path = output_dir / f"indobert-qat-{quant_type}-smsa" / f"evaluation_results_{quant_type}_eager.json"
-    else:
-        json_path = output_dir / f"indobert-smsa-qat-{quant_type}-fake" / f"evaluation_results_{quant_type}_fake.json"
+    json_path = output_dir / f"indobert-qat-{quant_type}-smsa" / f"evaluation_results_{quant_type}_eager.json"
     if json_path.exists():
         with open(json_path, 'r') as f:
             return json.load(f)
@@ -200,10 +141,7 @@ def _generate_qat_comparison(method, quant_types):
         import os
         output_dir = BASE_DIR / "outputs"
         for qt in quant_types:
-            if method == "eager":
-                fp32_json = output_dir / f"indobert-qat-{qt}-smsa" / "evaluation_results_fp32_eager.json"
-            else:
-                fp32_json = output_dir / f"indobert-smsa-qat-{qt}-fake" / "evaluation_results_fp32_fake.json"
+            fp32_json = output_dir / f"indobert-qat-{qt}-smsa" / "evaluation_results_fp32_eager.json"
             if fp32_json.exists():
                 with open(fp32_json, 'r') as f:
                     all_results['fp32'] = json.load(f)
@@ -229,26 +167,14 @@ def _generate_qat_comparison(method, quant_types):
     for qt in quant_types:
         if qt not in all_results:
             continue
-        if method == "eager":
-            model_dir = output_dir / f"indobert-qat-{qt}-smsa"
-            onnx_file = model_dir / f"model_qat_{qt}.onnx"
-            if onnx_file.exists():
-                model_sizes[qt] = os.path.getsize(onnx_file) / (1024 * 1024)
-            if 'fp32' not in model_sizes:
-                fp32_onnx = model_dir / "model_qat.onnx"
-                if fp32_onnx.exists():
-                    model_sizes['fp32'] = os.path.getsize(fp32_onnx) / (1024 * 1024)
-        else:
-            model_dir = output_dir / f"indobert-smsa-qat-{qt}-fake"
-            pth_file = model_dir / f"model_{qt}.pth"
-            if pth_file.exists():
-                model_sizes[qt] = os.path.getsize(pth_file) / (1024 * 1024)
-            elif (model_dir / "model.safetensors").exists():
-                model_sizes[qt] = os.path.getsize(model_dir / "model.safetensors") / (1024 * 1024)
-            if 'fp32' not in model_sizes:
-                fp32_safetensors = model_dir / "model.safetensors"
-                if fp32_safetensors.exists():
-                    model_sizes['fp32'] = os.path.getsize(fp32_safetensors) / (1024 * 1024)
+        model_dir = output_dir / f"indobert-qat-{qt}-smsa"
+        onnx_file = model_dir / f"model_qat_{qt}.onnx"
+        if onnx_file.exists():
+            model_sizes[qt] = os.path.getsize(onnx_file) / (1024 * 1024)
+        if 'fp32' not in model_sizes:
+            fp32_onnx = model_dir / "model_qat.onnx"
+            if fp32_onnx.exists():
+                model_sizes['fp32'] = os.path.getsize(fp32_onnx) / (1024 * 1024)
 
     plotter = QuantizationPlotter(output_dir)
     memory_usages = {}
@@ -273,10 +199,7 @@ def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0, 
             print(f"[{current}/{total}] {mode_label} {method.upper()} QAT with {quant_type.upper()}")
             print("=" * 70)
 
-            if method == "eager":
-                run_eager_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only, num_runs=num_runs)
-            else:
-                run_fake_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only, num_runs=num_runs)
+            run_eager_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only, num_runs=num_runs)
 
     for method in methods:
         _generate_qat_comparison(method, quant_types)
@@ -298,9 +221,9 @@ def main():
     parser.add_argument(
         "--method",
         type=str,
-        choices=["eager", "fake", "all"],
-        default="all",
-        help="QAT method: eager (ONNX pipeline), fake (HuggingFace save), or all",
+        choices=["eager"],
+        default="eager",
+        help="QAT method: eager (ONNX pipeline)",
     )
     parser.add_argument(
         "--quant-type",
@@ -312,9 +235,9 @@ def main():
     parser.add_argument(
         "--dataset",
         type=str,
-        choices=["smsa", "tweets", "default"],
-        default="default",
-        help="Evaluation dataset: smsa (test.tsv), tweets (INA_TweetsPPKM), or default (datasets/test.tsv)",
+        choices=["smsa"],
+        default="smsa",
+        help="Evaluation dataset: smsa (test.tsv)",
     )
     parser.add_argument(
         "--sample-frac",
@@ -336,13 +259,10 @@ def main():
     )
     args = parser.parse_args()
 
-    methods = ["eager", "fake"] if args.method == "all" else [args.method]
+    methods = ["eager"]
     quant_types = ["int8", "int4"] if args.quant_type == "all" else [args.quant_type]
 
-    if args.dataset in DATASET_PATHS:
-        dataset_path = str(DATASET_PATHS[args.dataset])
-    else:
-        dataset_path = None
+    dataset_path = str(DATASET_PATHS["smsa"])
 
     run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=args.sample_frac, evaluate_only=args.evaluate_only, num_runs=args.num_runs)
 

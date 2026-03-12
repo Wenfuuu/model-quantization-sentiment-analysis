@@ -286,13 +286,6 @@ def interactive_menu():
 
     model_choice = input("\n  Enter choice (1/2/3): ").strip()
 
-    print("\n  Select Dataset:")
-    print("  [1] SMSA (test.tsv)")
-    print("  [2] Tweets (INA_TweetsPPKM)")
-    print("  [3] Both")
-
-    dataset_choice = input("\n  Enter choice (1/2/3): ").strip()
-
     num_runs_str = input("\n  Number of inference runs per sample (default 20, 0 = skip latency benchmark): ").strip()
     num_runs_input = int(num_runs_str) if num_runs_str else None
 
@@ -304,18 +297,9 @@ def interactive_menu():
     else:
         models = ["original", "finetuned"]
 
-    datasets = []
-    if dataset_choice == "1":
-        datasets = ["smsa"]
-    elif dataset_choice == "2":
-        datasets = ["tweets"]
-    else:
-        datasets = ["smsa", "tweets"]
-
     selected = []
     for m in models:
-        for d in datasets:
-            selected.append(f"{m}_{d}")
+        selected.append(f"{m}_smsa")
 
     return selected, num_runs_input
 

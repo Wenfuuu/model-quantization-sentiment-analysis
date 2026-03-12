@@ -524,15 +524,8 @@ def interactive_menu():
 
     model_choice = input("\n  Enter choice (1/2): ").strip()
 
-    print("\n  Select Dataset:")
-    print("  [1] SMSA (test.tsv)")
-    print("  [2] Tweets (INA_TweetsPPKM)")
-
-    dataset_choice = input("\n  Enter choice (1/2): ").strip()
-
     model = "original" if model_choice == "1" else "finetuned"
-    dataset = "smsa" if dataset_choice == "1" else "tweets"
-    experiment_key = f"{model}_{dataset}"
+    experiment_key = f"{model}_smsa"
 
     print("\n  Sample Selection Mode:")
     print("  [1] Auto-select by label diversity")
@@ -672,16 +665,7 @@ def interactive_menu():
 
 
 def _qat_menu():
-    print("\n  Select QAT Method:")
-    print("  [1] Eager (ONNX pipeline models)")
-    print("  [2] Fake  (HuggingFace saved models)")
-
-    qat_method_choice = input("\n  Enter choice (1/2): ").strip()
-
-    if qat_method_choice == "1":
-        experiment_key = "qat_eager_smsa"
-    else:
-        experiment_key = "qat_fake_smsa"
+    experiment_key = "qat_eager_smsa"
 
     print("\n  Sample Selection Mode:")
     print("  [1] Auto-select by label diversity")
@@ -829,7 +813,7 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
                 )
                 if qat_hf_model is None:
                     print(f"  Loading HF model for IG: {model_path}")
-                    qat_hf_model = ModelManager.load_model(model_path)
+                    qat_hf_model = ModelManager.load_model(model_path, device=torch.device("cpu"))
                 onnx_model = OnnxBaseModel(
                     session, qat_hf_model.tokenizer, qat_hf_model.model, torch.device("cpu")
                 )
