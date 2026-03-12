@@ -616,7 +616,7 @@ def interactive_menu():
                 all_precs = ["fp32", "fp16", "int8", "int4"]
                 print(f"\n  {len(filtered)} divergent samples found:")
                 for idx, d in enumerate(filtered, 1):
-                    preds_str = "  ".join(f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.1f}%)" for p in all_precs)
+                    preds_str = "  ".join(f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.4f}%)" for p in all_precs)
                     print(f"\n  [{idx}] Sample #{d['sample_idx']+1}: Expected={d['expected']}")
                     print(f"      {preds_str}")
                     print(f"      \"{d['text']}\"")
@@ -699,7 +699,7 @@ def _qat_menu():
 
                 for idx, d in enumerate(divergences, 1):
                     preds_str = "  ".join(
-                        f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.1f}%)"
+                        f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.4f}%)"
                         for p in available_precisions
                     )
                     print(f"\n  [{idx}] Sample #{d['sample_idx']+1}: Expected={d['expected']}")

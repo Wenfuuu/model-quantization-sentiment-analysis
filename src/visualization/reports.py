@@ -9,55 +9,55 @@ def generate_comparison_report(fp32_results, fp16_results, int8_results, int4_re
             "Mean Latency (ms)", "Median Latency (ms)", "Std Latency (ms)"
         ],
         "FP32 (Baseline)": [
-            f"{fp32_size_mb:.2f}", f"{fp32_results['accuracy']*100:.2f}",
-            f"{fp32_results['avg_confidence']*100:.2f}",
-            f"{fp32_results['latency_stats']['mean']*1000:.2f}",
-            f"{fp32_results['latency_stats']['median']*1000:.2f}",
-            f"{fp32_results['latency_stats']['std']*1000:.2f}"
+            f"{fp32_size_mb:.2f}", f"{fp32_results['accuracy']*100:.4f}",
+            f"{fp32_results['avg_confidence']*100:.4f}",
+            f"{fp32_results['latency_stats']['mean']*1000:.4f}",
+            f"{fp32_results['latency_stats']['median']*1000:.4f}",
+            f"{fp32_results['latency_stats']['std']*1000:.4f}"
         ],
         "FP16 (Half)": [
-            f"{fp16_size_mb:.2f}", f"{fp16_results['accuracy']*100:.2f}",
-            f"{fp16_results['avg_confidence']*100:.2f}",
-            f"{fp16_results['latency_stats']['mean']*1000:.2f}",
-            f"{fp16_results['latency_stats']['median']*1000:.2f}",
-            f"{fp16_results['latency_stats']['std']*1000:.2f}"
+            f"{fp16_size_mb:.2f}", f"{fp16_results['accuracy']*100:.4f}",
+            f"{fp16_results['avg_confidence']*100:.4f}",
+            f"{fp16_results['latency_stats']['mean']*1000:.4f}",
+            f"{fp16_results['latency_stats']['median']*1000:.4f}",
+            f"{fp16_results['latency_stats']['std']*1000:.4f}"
         ],
         "INT8 (Quantized)": [
-            f"{int8_size_mb:.2f}", f"{int8_results['accuracy']*100:.2f}",
-            f"{int8_results['avg_confidence']*100:.2f}",
-            f"{int8_results['latency_stats']['mean']*1000:.2f}",
-            f"{int8_results['latency_stats']['median']*1000:.2f}",
-            f"{int8_results['latency_stats']['std']*1000:.2f}"
+            f"{int8_size_mb:.2f}", f"{int8_results['accuracy']*100:.4f}",
+            f"{int8_results['avg_confidence']*100:.4f}",
+            f"{int8_results['latency_stats']['mean']*1000:.4f}",
+            f"{int8_results['latency_stats']['median']*1000:.4f}",
+            f"{int8_results['latency_stats']['std']*1000:.4f}"
         ],
         "INT4 (4-bit)": [
-            f"{int4_size_mb:.2f}", f"{int4_results['accuracy']*100:.2f}",
-            f"{int4_results['avg_confidence']*100:.2f}",
-            f"{int4_results['latency_stats']['mean']*1000:.2f}",
-            f"{int4_results['latency_stats']['median']*1000:.2f}",
-            f"{int4_results['latency_stats']['std']*1000:.2f}"
+            f"{int4_size_mb:.2f}", f"{int4_results['accuracy']*100:.4f}",
+            f"{int4_results['avg_confidence']*100:.4f}",
+            f"{int4_results['latency_stats']['mean']*1000:.4f}",
+            f"{int4_results['latency_stats']['median']*1000:.4f}",
+            f"{int4_results['latency_stats']['std']*1000:.4f}"
         ],
         "FP16 vs FP32": [
-            f"{(1 - fp16_size_mb/fp32_size_mb)*100:+.2f}%",
-            f"{(fp16_results['accuracy'] - fp32_results['accuracy'])*100:+.2f}%",
-            f"{(fp16_results['avg_confidence'] - fp32_results['avg_confidence'])*100:+.2f}%",
-            f"{((fp16_results['latency_stats']['mean'] - fp32_results['latency_stats']['mean'])/fp32_results['latency_stats']['mean'])*100:+.2f}%",
-            f"{((fp16_results['latency_stats']['median'] - fp32_results['latency_stats']['median'])/fp32_results['latency_stats']['median'])*100:+.2f}%",
+            f"{(1 - fp16_size_mb/fp32_size_mb)*100:+.4f}%",
+            f"{(fp16_results['accuracy'] - fp32_results['accuracy'])*100:+.4f}%",
+            f"{(fp16_results['avg_confidence'] - fp32_results['avg_confidence'])*100:+.4f}%",
+            f"{((fp16_results['latency_stats']['mean'] - fp32_results['latency_stats']['mean'])/fp32_results['latency_stats']['mean'])*100:+.4f}%",
+            f"{((fp16_results['latency_stats']['median'] - fp32_results['latency_stats']['median'])/fp32_results['latency_stats']['median'])*100:+.4f}%",
             "N/A"
         ],
         "INT8 vs FP32": [
-            f"{(1 - int8_size_mb/fp32_size_mb)*100:+.2f}%",
-            f"{(int8_results['accuracy'] - fp32_results['accuracy'])*100:+.2f}%",
-            f"{(int8_results['avg_confidence'] - fp32_results['avg_confidence'])*100:+.2f}%",
-            f"{((int8_results['latency_stats']['mean'] - fp32_results['latency_stats']['mean'])/fp32_results['latency_stats']['mean'])*100:+.2f}%",
-            f"{((int8_results['latency_stats']['median'] - fp32_results['latency_stats']['median'])/fp32_results['latency_stats']['median'])*100:+.2f}%",
+            f"{(1 - int8_size_mb/fp32_size_mb)*100:+.4f}%",
+            f"{(int8_results['accuracy'] - fp32_results['accuracy'])*100:+.4f}%",
+            f"{(int8_results['avg_confidence'] - fp32_results['avg_confidence'])*100:+.4f}%",
+            f"{((int8_results['latency_stats']['mean'] - fp32_results['latency_stats']['mean'])/fp32_results['latency_stats']['mean'])*100:+.4f}%",
+            f"{((int8_results['latency_stats']['median'] - fp32_results['latency_stats']['median'])/fp32_results['latency_stats']['median'])*100:+.4f}%",
             "N/A"
         ],
         "INT4 vs FP32": [
-            f"{(1 - int4_size_mb/fp32_size_mb)*100:+.2f}%",
-            f"{(int4_results['accuracy'] - fp32_results['accuracy'])*100:+.2f}%",
-            f"{(int4_results['avg_confidence'] - fp32_results['avg_confidence'])*100:+.2f}%",
-            f"{((int4_results['latency_stats']['mean'] - fp32_results['latency_stats']['mean'])/fp32_results['latency_stats']['mean'])*100:+.2f}%",
-            f"{((int4_results['latency_stats']['median'] - fp32_results['latency_stats']['median'])/fp32_results['latency_stats']['median'])*100:+.2f}%",
+            f"{(1 - int4_size_mb/fp32_size_mb)*100:+.4f}%",
+            f"{(int4_results['accuracy'] - fp32_results['accuracy'])*100:+.4f}%",
+            f"{(int4_results['avg_confidence'] - fp32_results['avg_confidence'])*100:+.4f}%",
+            f"{((int4_results['latency_stats']['mean'] - fp32_results['latency_stats']['mean'])/fp32_results['latency_stats']['mean'])*100:+.4f}%",
+            f"{((int4_results['latency_stats']['median'] - fp32_results['latency_stats']['median'])/fp32_results['latency_stats']['median'])*100:+.4f}%",
             "N/A"
         ]
     }
@@ -80,15 +80,15 @@ def generate_prediction_comparison(fp32_results, fp16_results, int8_results, int
             "Text": fp32_pred["text"][:30] + "...",
             "Expected": fp32_pred["expected"],
             "FP32": fp32_pred["predicted"],
-            "FP32%": f"{fp32_pred['confidence']*100:.1f}%",
+            "FP32%": f"{fp32_pred['confidence']*100:.4f}%",
             "FP16": fp16_pred["predicted"],
-            "FP16%": f"{fp16_pred['confidence']*100:.1f}%",
+            "FP16%": f"{fp16_pred['confidence']*100:.4f}%",
             "FP16=FP32": fp16_match,
             "INT8": int8_pred["predicted"],
-            "INT8%": f"{int8_pred['confidence']*100:.1f}%",
+            "INT8%": f"{int8_pred['confidence']*100:.4f}%",
             "INT8=FP32": int8_match,
             "INT4": int4_pred["predicted"],
-            "INT4%": f"{int4_pred['confidence']*100:.1f}%",
+            "INT4%": f"{int4_pred['confidence']*100:.4f}%",
             "INT4=FP32": int4_match
         })
 

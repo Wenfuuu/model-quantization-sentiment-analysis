@@ -109,9 +109,9 @@ def run_evaluation(model: BaseModel, samples: list, tag: str, use_fp16: bool = F
     print(f"\n[EVAL] {tag}")
     evaluator = ModelEvaluator(model)
     results = evaluator.evaluate(samples, num_runs=20, warmup=5, use_fp16=use_fp16)
-    print(f"  Accuracy:     {results['accuracy']*100:.2f}%")
-    print(f"  Avg conf:     {results['avg_confidence']*100:.2f}%")
-    print(f"  Latency mean: {results['latency_stats']['mean']*1000:.2f} ms")
+    print(f"  Accuracy:     {results['accuracy']*100:.4f}%")
+    print(f"  Avg conf:     {results['avg_confidence']*100:.4f}%")
+    print(f"  Latency mean: {results['latency_stats']['mean']*1000:.4f} ms")
     return results
 
 def run_calibration(eval_results: dict, tag: str, output_dir: Path) -> dict:

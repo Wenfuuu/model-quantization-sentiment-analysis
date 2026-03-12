@@ -51,8 +51,8 @@ def run_ptq():
     print_section("ALL EXPERIMENTS COMPLETED")
     for key, res in all_results.items():
         print(f"\n{key}:")
-        print(f"  Accuracy: FP32={res['fp32_results']['accuracy']*100:.2f}% | FP16={res['fp16_results']['accuracy']*100:.2f}% | INT8={res['int8_results']['accuracy']*100:.2f}% | INT4={res['int4_results']['accuracy']*100:.2f}%")
-        print(f"  Size: FP32={res['fp32_size_mb']:.1f}MB | FP16={res['fp16_size_mb']:.1f}MB | INT8={res['int8_size_mb']:.1f}MB | INT4={res['int4_size_mb']:.1f}MB")
+        print(f"  Accuracy: FP32={res['fp32_results']['accuracy']*100:.4f}% | FP16={res['fp16_results']['accuracy']*100:.4f}% | INT8={res['int8_results']['accuracy']*100:.4f}% | INT4={res['int4_results']['accuracy']*100:.4f}%")
+        print(f"  Size: FP32={res['fp32_size_mb']:.4f}MB | FP16={res['fp16_size_mb']:.4f}MB | INT8={res['int8_size_mb']:.4f}MB | INT4={res['int4_size_mb']:.4f}MB")
 
 
 def run_qat():
