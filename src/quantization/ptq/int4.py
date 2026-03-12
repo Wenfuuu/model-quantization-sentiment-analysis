@@ -52,6 +52,10 @@ class INT4Linear(nn.Module):
             self.register_buffer('bias', None)
         self.quantizer = quantizer
 
+    @property
+    def weight(self):
+        return self.quantizer.dequantize_tensor(self.weight_quantized, self.weight_scale)
+
     def forward(self, x):
         weight_dequant = self.quantizer.dequantize_tensor(self.weight_quantized, self.weight_scale)
         return nn.functional.linear(x, weight_dequant, self.bias)

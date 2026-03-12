@@ -529,7 +529,7 @@ class FakeQATTrainer:
         plt.savefig(save_path, dpi=300)
         plt.close()
 
-    def evaluate(self, model_path=None, dataset_path=None):
+    def evaluate(self, model_path=None, dataset_path=None, num_runs=20):
         if model_path is None:
             model_path = str(self.config.save_dir)
 
@@ -549,8 +549,7 @@ class FakeQATTrainer:
             self.config.id2label[i].capitalize()
             for i in range(self.config.num_labels)
         ]
-        num_runs = 20
-        warmup_runs = 5
+        warmup_runs = 5 if num_runs > 0 else 0
 
         eval_args = TrainingArguments(
             output_dir=results_dir,

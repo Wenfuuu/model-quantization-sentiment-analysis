@@ -56,7 +56,7 @@ def run_ptq():
 
 
 def run_qat():
-    methods, quant_types, dataset_path, sample_frac, evaluate_only = qat_menu()
+    methods, quant_types, dataset_path, sample_frac, evaluate_only, num_runs = qat_menu()
 
     total = len(methods) * len(quant_types)
     combos = [f"{m.upper()} {q.upper()}" for m in methods for q in quant_types]
@@ -66,12 +66,13 @@ def run_qat():
     print(f"STARTING QAT EXPERIMENTS - {total} COMBINATION(S) [{mode_label}]")
     if dataset_path:
         print(f"Evaluation Dataset: {dataset_path}")
+    print(f"Inference runs per sample: {num_runs}")
     print("=" * 80)
     for i, combo in enumerate(combos, 1):
         print(f"  [{i}/{total}] {combo}")
     print("=" * 80 + "\n")
 
-    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only)
+    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only, num_runs=num_runs)
 
     print_section("ALL QAT EXPERIMENTS COMPLETED")
 

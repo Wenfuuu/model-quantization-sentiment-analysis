@@ -454,6 +454,11 @@ class EagerQATTrainer:
                     {'input_ids': input_ids, 'attention_mask': attention_mask},
                 )
 
+            outputs = session.run(
+                None,
+                {'input_ids': input_ids, 'attention_mask': attention_mask},
+            )
+
             sample_latencies = []
             for _ in range(num_runs):
                 start_time = time.time()
@@ -464,7 +469,7 @@ class EagerQATTrainer:
                 elapsed = time.time() - start_time
                 sample_latencies.append(elapsed)
 
-            per_sample_latencies.append(float(np.mean(sample_latencies)))
+            per_sample_latencies.append(float(np.mean(sample_latencies)) if sample_latencies else 0.0)
 
             logits = outputs[0]
             probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
@@ -527,7 +532,7 @@ class EagerQATTrainer:
         plt.close()
         return cm
 
-    def evaluate_onnx(self, onnx_model_path=None, dataset_path=None):
+    def evaluate_onnx(self, onnx_model_path=None, dataset_path=None, num_runs=20):
         import onnxruntime as ort
         if onnx_model_path is None:
             save_path = str(self.config.save_dir)
@@ -545,8 +550,7 @@ class EagerQATTrainer:
         fp32_onnx_path = os.path.join(save_path, "model_qat.onnx")
         results_dir = str(self.config.results_dir)
         os.makedirs(results_dir, exist_ok=True)
-        num_runs = 20
-        warmup_runs = 5
+        warmup_runs = 5 if num_runs > 0 else 0
         label_names = [
             self.config.id2label[i].capitalize()
             for i in range(self.config.num_labels)

@@ -33,13 +33,13 @@ def get_default_config(method, quant_type, sample_frac=1.0):
     )
 
 
-def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=False):
+def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=False, num_runs=20):
     config = get_default_config("eager", quant_type, sample_frac=sample_frac)
     trainer = EagerQATTrainer(config, quantization_type=quant_type)
 
     if evaluate_only:
         print(f"\n[Evaluate Only] Evaluating {quant_type.upper()} ONNX model...")
-        results = trainer.evaluate_onnx(dataset_path=dataset_path)
+        results = trainer.evaluate_onnx(dataset_path=dataset_path, num_runs=num_runs)
         return results
 
     if quant_type == "fp32":
@@ -50,7 +50,7 @@ def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=
         trainer.export_to_onnx()
 
         print(f"\n[Step 3/3] Evaluating FP32 ONNX model...")
-        results = trainer.evaluate_onnx(dataset_path=dataset_path)
+        results = trainer.evaluate_onnx(dataset_path=dataset_path, num_runs=num_runs)
         return results
 
     print(f"\n[Step 1/4] Training with QAT ({quant_type.upper()} eager)...")
@@ -63,17 +63,17 @@ def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=
     onnx_path = trainer.quantize_onnx()
 
     print(f"\n[Step 4/4] Evaluating {quant_type.upper()} ONNX model...")
-    results = trainer.evaluate_onnx(onnx_path, dataset_path=dataset_path)
+    results = trainer.evaluate_onnx(onnx_path, dataset_path=dataset_path, num_runs=num_runs)
     return results
 
 
-def run_fake_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=False):
+def run_fake_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=False, num_runs=20):
     config = get_default_config("fake", quant_type, sample_frac=sample_frac)
     trainer = FakeQATTrainer(config, quantization_type=quant_type)
 
     if evaluate_only:
         print(f"\n[Evaluate Only] Evaluating {quant_type.upper()} fake QAT model...")
-        results = trainer.evaluate(dataset_path=dataset_path)
+        results = trainer.evaluate(dataset_path=dataset_path, num_runs=num_runs)
         return results
 
     if quant_type == "fp32":
@@ -86,7 +86,7 @@ def run_fake_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=F
         print(f"\n[Step 2/2] Evaluating FP32 model...")
     else:
         print(f"\n[Step 2/2] Evaluating {quant_type.upper()} fake QAT model...")
-    results = trainer.evaluate(dataset_path=dataset_path)
+    results = trainer.evaluate(dataset_path=dataset_path, num_runs=num_runs)
     return results
 
 
@@ -153,7 +153,13 @@ def interactive_menu():
         if pct_input:
             sample_frac = max(1, min(100, int(pct_input))) / 100.0
 
-    return methods, quant_types, dataset_path, sample_frac, evaluate_only
+    num_runs_input = input("\n  Inference runs per sample (0 = skip latency, default=20): ").strip()
+    if num_runs_input:
+        num_runs = max(0, int(num_runs_input))
+    else:
+        num_runs = 20
+
+    return methods, quant_types, dataset_path, sample_frac, evaluate_only, num_runs
 
 
 def _load_evaluation_json(method, quant_type):
@@ -254,7 +260,7 @@ def _generate_qat_comparison(method, quant_types):
     print(f"\nQAT {method.upper()} comparison chart saved to: {chart_path}")
 
 
-def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0, evaluate_only=False):
+def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0, evaluate_only=False, num_runs=20):
     total = len(methods) * len(quant_types)
     current = 0
 
@@ -267,9 +273,9 @@ def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0, 
             print("=" * 70)
 
             if method == "eager":
-                run_eager_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only)
+                run_eager_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only, num_runs=num_runs)
             else:
-                run_fake_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only)
+                run_fake_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only, num_runs=num_runs)
 
     for method in methods:
         _generate_qat_comparison(method, quant_types)
@@ -316,6 +322,12 @@ def main():
         default=False,
         help="Skip training and only evaluate existing models",
     )
+    parser.add_argument(
+        "--num-runs",
+        type=int,
+        default=20,
+        help="Inference runs per sample for latency measurement (0 = skip latency)",
+    )
     args = parser.parse_args()
 
     methods = ["eager", "fake"] if args.method == "all" else [args.method]
@@ -326,7 +338,7 @@ def main():
     else:
         dataset_path = None
 
-    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=args.sample_frac, evaluate_only=args.evaluate_only)
+    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=args.sample_frac, evaluate_only=args.evaluate_only, num_runs=args.num_runs)
 
 
 if __name__ == "__main__":
