@@ -69,32 +69,86 @@ def generate_qat_divergences(experiment_key):
     else:
         test_samples = load_tweets_dataset()
 
-    available_precisions = []
-    models = {}
-
+    onnx_paths = {}
     for precision, model_path in config["model_paths"].items():
-        if Path(model_path).exists():
-            print(f"\n  Loading QAT {precision.upper()} model: {model_path}")
-            models[precision] = ModelManager.load_model(model_path)
-            available_precisions.append(precision)
-        else:
-            print(f"\n  Skipping {precision.upper()}: model not found at {model_path}")
+        candidate = Path(model_path).parent / f"model_qat_{precision}.onnx"
+        if candidate.exists():
+            onnx_paths[precision] = candidate
 
-    if len(available_precisions) < 2:
-        print("\n  Need at least 2 QAT models to compare divergences.")
-        return None
+    if onnx_paths:
+        import onnxruntime as ort
+        from transformers import AutoTokenizer as _HFTokenizer
 
-    print(f"\n  Running inference on {len(test_samples)} samples with {len(available_precisions)} models...")
+        available_precisions = list(onnx_paths.keys())
+        print(f"\n  QAT eager ONNX models found: {', '.join(p.upper() for p in available_precisions)}")
 
-    all_preds = {p: [] for p in available_precisions}
+        tokenizer_source = next(
+            v for v in config["model_paths"].values() if Path(v).exists()
+        )
+        tokenizer = _HFTokenizer.from_pretrained(tokenizer_source)
 
-    for sample in test_samples:
-        for precision in available_precisions:
-            pred = models[precision].predict(sample["text"], use_fp16=(precision == "fp16"))
-            all_preds[precision].append({
-                "label": pred["label"],
-                "confidence": float(pred["confidence"])
-            })
+        sessions = {}
+        for precision, onnx_path in onnx_paths.items():
+            print(f"\n  Loading ONNX {precision.upper()}: {onnx_path}")
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            sessions[precision] = ort.InferenceSession(
+                str(onnx_path), opts, providers=["CPUExecutionProvider"]
+            )
+
+        print(f"\n  Running ONNX inference on {len(test_samples)} samples...")
+        all_preds = {p: [] for p in available_precisions}
+
+        for sample in test_samples:
+            text = sample["text"].lower().strip()
+            enc = tokenizer(
+                text,
+                truncation=True,
+                padding="max_length",
+                max_length=128,
+                return_tensors="np",
+            )
+            input_ids = enc["input_ids"].astype(np.int64)
+            attention_mask = enc["attention_mask"].astype(np.int64)
+
+            for precision, session in sessions.items():
+                logits = session.run(
+                    None,
+                    {"input_ids": input_ids, "attention_mask": attention_mask},
+                )[0]
+                probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
+                pred_idx = int(np.argmax(logits, axis=1)[0])
+                all_preds[precision].append({
+                    "label": LABELS[pred_idx],
+                    "confidence": float(probs[0, pred_idx]),
+                })
+
+    else:
+        available_precisions = []
+        models = {}
+
+        for precision, model_path in config["model_paths"].items():
+            if Path(model_path).exists():
+                print(f"\n  Loading QAT {precision.upper()} model: {model_path}")
+                models[precision] = ModelManager.load_model(model_path)
+                available_precisions.append(precision)
+            else:
+                print(f"\n  Skipping {precision.upper()}: model not found at {model_path}")
+
+        if len(available_precisions) < 2:
+            print("\n  Need at least 2 QAT models to compare divergences.")
+            return None
+
+        print(f"\n  Running inference on {len(test_samples)} samples with {len(available_precisions)} models...")
+        all_preds = {p: [] for p in available_precisions}
+
+        for sample in test_samples:
+            for precision in available_precisions:
+                pred = models[precision].predict(sample["text"], use_fp16=(precision == "fp16"))
+                all_preds[precision].append({
+                    "label": pred["label"],
+                    "confidence": float(pred["confidence"]),
+                })
 
     divergences = []
     for i, sample in enumerate(test_samples):
@@ -105,14 +159,14 @@ def generate_qat_divergences(experiment_key):
                 "sample_idx": i,
                 "text": sample["text"],
                 "expected": sample["expected"],
-                "predictions": preds_by_precision
+                "predictions": preds_by_precision,
             })
 
     divergence_data = {
         "experiment": experiment_key,
         "total_samples": len(test_samples),
         "num_divergences": len(divergences),
-        "divergences": divergences
+        "divergences": divergences,
     }
 
     divergence_path = output_dir / "prediction_divergences.json"
