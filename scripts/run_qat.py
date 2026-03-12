@@ -33,9 +33,14 @@ def get_default_config(method, quant_type, sample_frac=1.0):
     )
 
 
-def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0):
+def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=False):
     config = get_default_config("eager", quant_type, sample_frac=sample_frac)
     trainer = EagerQATTrainer(config, quantization_type=quant_type)
+
+    if evaluate_only:
+        print(f"\n[Evaluate Only] Evaluating {quant_type.upper()} ONNX model...")
+        results = trainer.evaluate_onnx(dataset_path=dataset_path)
+        return results
 
     if quant_type == "fp32":
         print(f"\n[Step 1/3] Training base model (FP32 eager)...")
@@ -62,9 +67,14 @@ def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0):
     return results
 
 
-def run_fake_qat(quant_type, dataset_path=None, sample_frac=1.0):
+def run_fake_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=False):
     config = get_default_config("fake", quant_type, sample_frac=sample_frac)
     trainer = FakeQATTrainer(config, quantization_type=quant_type)
+
+    if evaluate_only:
+        print(f"\n[Evaluate Only] Evaluating {quant_type.upper()} fake QAT model...")
+        results = trainer.evaluate(dataset_path=dataset_path)
+        return results
 
     if quant_type == "fp32":
         print(f"\n[Step 1/2] Training base model (FP32)...")
@@ -91,6 +101,13 @@ def interactive_menu():
     print("  [3] Both")
 
     method_choice = input("\n  Enter choice (1/2/3): ").strip()
+
+    print("\n  Select Mode:")
+    print("  [1] Train + Evaluate")
+    print("  [2] Evaluate Only (skip training, use existing model)")
+
+    mode_choice = input("\n  Enter choice (1/2): ").strip()
+    evaluate_only = mode_choice == "2"
 
     print("\n  Select Quantization Type:")
     print("  [1] FP16")
@@ -136,7 +153,7 @@ def interactive_menu():
         if pct_input:
             sample_frac = max(1, min(100, int(pct_input))) / 100.0
 
-    return methods, quant_types, dataset_path, sample_frac
+    return methods, quant_types, dataset_path, sample_frac, evaluate_only
 
 
 def _load_evaluation_json(method, quant_type):
@@ -237,21 +254,22 @@ def _generate_qat_comparison(method, quant_types):
     print(f"\nQAT {method.upper()} comparison chart saved to: {chart_path}")
 
 
-def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0):
+def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0, evaluate_only=False):
     total = len(methods) * len(quant_types)
     current = 0
 
     for method in methods:
         for quant_type in quant_types:
             current += 1
+            mode_label = "Evaluating" if evaluate_only else "Running"
             print("\n" + "=" * 70)
-            print(f"[{current}/{total}] Running {method.upper()} QAT with {quant_type.upper()}")
+            print(f"[{current}/{total}] {mode_label} {method.upper()} QAT with {quant_type.upper()}")
             print("=" * 70)
 
             if method == "eager":
-                run_eager_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac)
+                run_eager_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only)
             else:
-                run_fake_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac)
+                run_fake_qat(quant_type, dataset_path=dataset_path, sample_frac=sample_frac, evaluate_only=evaluate_only)
 
     for method in methods:
         _generate_qat_comparison(method, quant_types)
@@ -292,6 +310,12 @@ def main():
         default=1.0,
         help="Fraction of data to use for Tweets dataset (0.0-1.0, default: 1.0 = all data)",
     )
+    parser.add_argument(
+        "--evaluate-only",
+        action="store_true",
+        default=False,
+        help="Skip training and only evaluate existing models",
+    )
     args = parser.parse_args()
 
     methods = ["eager", "fake"] if args.method == "all" else [args.method]
@@ -302,7 +326,7 @@ def main():
     else:
         dataset_path = None
 
-    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=args.sample_frac)
+    run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=args.sample_frac, evaluate_only=args.evaluate_only)
 
 
 if __name__ == "__main__":
