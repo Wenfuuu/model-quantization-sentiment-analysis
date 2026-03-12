@@ -10,6 +10,7 @@ from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
 from src.quantization.qat.fake import FakeQATTrainer
 from src.visualization import QuantizationPlotter
+from scripts.run_xai import generate_qat_divergences
 
 
 def get_default_config(method, quant_type, sample_frac=1.0):
@@ -279,6 +280,11 @@ def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0, 
 
     for method in methods:
         _generate_qat_comparison(method, quant_types)
+
+    for method in methods:
+        experiment_key = f"qat_{method}_smsa"
+        print(f"\n  Generating prediction divergences for {method.upper()}...")
+        generate_qat_divergences(experiment_key)
 
     print("\n" + "=" * 70)
     print("All QAT experiments completed!")

@@ -1,4 +1,5 @@
 import sys
+import time
 import torch
 import json
 import warnings
@@ -91,7 +92,8 @@ def generate_qat_divergences(experiment_key):
         for precision, onnx_path in onnx_paths.items():
             print(f"\n  Loading ONNX {precision.upper()}: {onnx_path}")
             opts = ort.SessionOptions()
-            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+            opts.log_severity_level = 3
             sessions[precision] = ort.InferenceSession(
                 str(onnx_path), opts, providers=["CPUExecutionProvider"]
             )
@@ -177,6 +179,44 @@ def generate_qat_divergences(experiment_key):
     print(f"  Saved to: {divergence_path}")
 
     return divergence_data
+
+
+class OnnxBaseModel:
+    def __init__(self, session, tokenizer, hf_model, device):
+        self.session = session
+        self.tokenizer = tokenizer
+        self.model = hf_model
+        self.device = device
+
+    def predict(self, text, use_fp16=False):
+        text = text.lower().strip()
+        enc = self.tokenizer(
+            text,
+            truncation=True,
+            padding="max_length",
+            max_length=128,
+            return_tensors="np",
+        )
+        input_ids = enc["input_ids"].astype(np.int64)
+        attention_mask = enc["attention_mask"].astype(np.int64)
+
+        start_time = time.perf_counter()
+        logits = self.session.run(
+            None,
+            {"input_ids": input_ids, "attention_mask": attention_mask},
+        )[0]
+        end_time = time.perf_counter()
+
+        probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
+        pred_idx = int(np.argmax(logits, axis=1)[0])
+
+        return {
+            "label": LABELS[pred_idx],
+            "class_id": pred_idx,
+            "confidence": float(probs[0, pred_idx]),
+            "probabilities": {LABELS[i]: float(probs[0, i]) for i in range(len(LABELS))},
+            "inference_time": end_time - start_time,
+        }
 
 
 def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
@@ -765,6 +805,7 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
     all_shap = {}
     all_ig = {}
     all_occ = {}
+    qat_hf_model = None
 
     for precision in precisions:
         print_section(f"COLLECTING XAI DATA - {precision.upper()}")
@@ -775,10 +816,29 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
                 print(f"  Model not found: {model_path}")
                 print(f"  Please run QAT training first.")
                 continue
-            print(f"  Loading QAT model: {model_path}")
-            qat_model = ModelManager.load_model(model_path)
-            use_fp16 = precision == "fp16"
-            lime_res, shap_res, ig_res, occ_res = collect_xai_results(qat_model, precision, samples, use_fp16=use_fp16)
+
+            onnx_path = Path(model_path).parent / f"model_qat_{precision}.onnx"
+            if onnx_path.exists():
+                import onnxruntime as ort
+                print(f"  Loading QAT ONNX {precision.upper()}: {onnx_path}")
+                opts = ort.SessionOptions()
+                opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+                opts.log_severity_level = 3
+                session = ort.InferenceSession(
+                    str(onnx_path), opts, providers=["CPUExecutionProvider"]
+                )
+                if qat_hf_model is None:
+                    print(f"  Loading HF model for IG: {model_path}")
+                    qat_hf_model = ModelManager.load_model(model_path)
+                onnx_model = OnnxBaseModel(
+                    session, qat_hf_model.tokenizer, qat_hf_model.model, torch.device("cpu")
+                )
+                lime_res, shap_res, ig_res, occ_res = collect_xai_results(onnx_model, precision, samples)
+            else:
+                print(f"  Loading QAT model: {model_path}")
+                qat_model = ModelManager.load_model(model_path)
+                use_fp16 = precision == "fp16"
+                lime_res, shap_res, ig_res, occ_res = collect_xai_results(qat_model, precision, samples, use_fp16=use_fp16)
 
         elif precision == "fp32":
             lime_res, shap_res, ig_res, occ_res = collect_xai_results(base_model, "fp32", samples)
