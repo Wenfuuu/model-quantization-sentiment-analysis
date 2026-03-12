@@ -43,19 +43,86 @@ def select_samples(dataset_samples, num_samples=3):
 
 
 def load_divergences(experiment_key):
-    config = EXPERIMENT_CONFIGS[experiment_key]
+    if experiment_key in QAT_EXPERIMENT_CONFIGS:
+        config = QAT_EXPERIMENT_CONFIGS[experiment_key]
+    else:
+        config = EXPERIMENT_CONFIGS[experiment_key]
     output_dir = Path(config["output_dir"])
     divergence_path = output_dir / "prediction_divergences.json"
-    
+
     if not divergence_path.exists():
-        print(f"\n  Divergence file not found: {divergence_path}")
-        print("  Please run PTQ experiment first to generate divergence data.")
         return None
-    
+
     with open(divergence_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    
+
     return data
+
+
+def generate_qat_divergences(experiment_key):
+    config = QAT_EXPERIMENT_CONFIGS[experiment_key]
+    output_dir = Path(config["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if config["dataset"] == "smsa":
+        test_samples = load_smsa_dataset()
+    else:
+        test_samples = load_tweets_dataset()
+
+    available_precisions = []
+    models = {}
+
+    for precision, model_path in config["model_paths"].items():
+        if Path(model_path).exists():
+            print(f"\n  Loading QAT {precision.upper()} model: {model_path}")
+            models[precision] = ModelManager.load_model(model_path)
+            available_precisions.append(precision)
+        else:
+            print(f"\n  Skipping {precision.upper()}: model not found at {model_path}")
+
+    if len(available_precisions) < 2:
+        print("\n  Need at least 2 QAT models to compare divergences.")
+        return None
+
+    print(f"\n  Running inference on {len(test_samples)} samples with {len(available_precisions)} models...")
+
+    all_preds = {p: [] for p in available_precisions}
+
+    for sample in test_samples:
+        for precision in available_precisions:
+            pred = models[precision].predict(sample["text"], use_fp16=(precision == "fp16"))
+            all_preds[precision].append({
+                "label": pred["label"],
+                "confidence": float(pred["confidence"])
+            })
+
+    divergences = []
+    for i, sample in enumerate(test_samples):
+        preds_by_precision = {p: all_preds[p][i] for p in available_precisions}
+        labels_set = set(preds_by_precision[p]["label"] for p in available_precisions)
+        if len(labels_set) > 1:
+            divergences.append({
+                "sample_idx": i,
+                "text": sample["text"],
+                "expected": sample["expected"],
+                "predictions": preds_by_precision
+            })
+
+    divergence_data = {
+        "experiment": experiment_key,
+        "total_samples": len(test_samples),
+        "num_divergences": len(divergences),
+        "divergences": divergences
+    }
+
+    divergence_path = output_dir / "prediction_divergences.json"
+    with open(divergence_path, "w", encoding="utf-8") as f:
+        json.dump(divergence_data, f, ensure_ascii=False, indent=2)
+
+    print(f"\n  Found {len(divergences)} divergent samples out of {len(test_samples)} total")
+    print(f"  Saved to: {divergence_path}")
+
+    return divergence_data
 
 
 def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
@@ -521,6 +588,61 @@ def _qat_menu():
         experiment_key = "qat_eager_smsa"
     else:
         experiment_key = "qat_fake_smsa"
+
+    print("\n  Sample Selection Mode:")
+    print("  [1] Auto-select by label diversity")
+    print("  [2] From prediction divergences (find where quantizations disagree)")
+
+    sample_mode = input("\n  Enter choice (1/2): ").strip()
+
+    if sample_mode == "2":
+        div_data = load_divergences(experiment_key)
+
+        if div_data is None:
+            print("\n  No divergence file found. Generating by comparing QAT models...")
+            div_data = generate_qat_divergences(experiment_key)
+
+        if div_data is None:
+            print("\n  Cannot generate divergences (models not found). Switching to auto-select.")
+            sample_mode = "1"
+        else:
+            divergences = div_data["divergences"]
+
+            if not divergences:
+                print("\n  No divergences found - all QAT models agree on every sample!")
+                print("  Switching to auto-select mode.")
+                sample_mode = "1"
+            else:
+                available_precisions = list(divergences[0]["predictions"].keys())
+
+                print(f"\n  Found {len(divergences)} divergent samples (out of {div_data['total_samples']} total)")
+                print(f"  Models compared: {', '.join(p.upper() for p in available_precisions)}")
+                print(f"\n  Divergent samples:")
+
+                for idx, d in enumerate(divergences, 1):
+                    preds_str = "  ".join(
+                        f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.1f}%)"
+                        for p in available_precisions
+                    )
+                    print(f"\n  [{idx}] Sample #{d['sample_idx']+1}: Expected={d['expected']}")
+                    print(f"      {preds_str}")
+                    print(f"      \"{d['text']}\"")
+
+                select_str = input(f"\n  Select samples: [A]ll or enter numbers (e.g., 1,3,5): ").strip()
+
+                if select_str.upper() == "A" or select_str == "":
+                    selected_divs = divergences
+                else:
+                    indices = [int(x.strip()) - 1 for x in select_str.split(",")]
+                    selected_divs = [divergences[i] for i in indices if 0 <= i < len(divergences)]
+
+                divergence_samples = [{"text": d["text"], "expected": d["expected"]} for d in selected_divs]
+                precisions = available_precisions
+
+                print(f"\n  Selected {len(divergence_samples)} divergent samples for XAI analysis")
+                print(f"  Precisions: {', '.join(p.upper() for p in precisions)}")
+
+                return experiment_key, precisions, len(divergence_samples), divergence_samples
 
     print("\n  Select Quantization Type:")
     print("  [1] INT8")
