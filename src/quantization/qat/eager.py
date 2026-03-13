@@ -1,3 +1,5 @@
+import ctypes
+import gc
 import os
 import re
 import time
@@ -35,6 +37,19 @@ class EagerQATTrainer:
         self.config = config
         self.quantization_type = quantization_type
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+
+    @staticmethod
+    def _get_rss_mb():
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024
+        return 0
+
+    @staticmethod
+    def _release_memory():
+        gc.collect()
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
 
     def _preprocess_text(self, text):
         if not isinstance(text, str):
@@ -573,11 +588,21 @@ class EagerQATTrainer:
 
         fp32_sess_options = ort.SessionOptions()
         fp32_sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self._release_memory()
+        mem_before = self._get_rss_mb()
         fp32_session = ort.InferenceSession(
             fp32_onnx_path, fp32_sess_options,
             providers=['CPUExecutionProvider'],
         )
-        fp32_memory_mb = os.path.getsize(fp32_onnx_path) / (1024 * 1024)
+        _sample = tokenized_dataset['test'][0]
+        fp32_session.run(
+            None,
+            {
+                'input_ids': np.array([_sample['input_ids']], dtype=np.int64),
+                'attention_mask': np.array([_sample['attention_mask']], dtype=np.int64),
+            },
+        )
+        fp32_memory_mb = self._get_rss_mb() - mem_before
         print(f"FP32 ONNX model loaded: {fp32_onnx_path}")
 
         print(f"\nRunning FP32 inference ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
@@ -606,6 +631,7 @@ class EagerQATTrainer:
         print(f"FP32 confusion matrix saved to: {fp32_cm_path}")
 
         del fp32_session
+        self._release_memory()
 
         if self.quantization_type == "fp32":
             fp32_results_data = {
@@ -638,11 +664,21 @@ class EagerQATTrainer:
                 ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
 
+        self._release_memory()
+        mem_before = self._get_rss_mb()
         session = ort.InferenceSession(
             onnx_model_path, sess_options,
             providers=['CPUExecutionProvider'],
         )
-        quant_memory_mb = os.path.getsize(onnx_model_path) / (1024 * 1024)
+        _sample = tokenized_dataset['test'][0]
+        session.run(
+            None,
+            {
+                'input_ids': np.array([_sample['input_ids']], dtype=np.int64),
+                'attention_mask': np.array([_sample['attention_mask']], dtype=np.int64),
+            },
+        )
+        quant_memory_mb = self._get_rss_mb() - mem_before
         print(f"Quantized ONNX model loaded: {onnx_model_path}")
         print(f"Provider: {session.get_providers()}")
 
