@@ -15,7 +15,7 @@ os.environ["HF_HOME"] = str(hf_cache_dir)
 sys.path.insert(0, str(Path(__file__).parent))
 
 from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment
-from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment
+from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment, run_xai_diagnostics
 from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu
 from scripts.run_stress_test import interactive_menu as stress_menu, run_stress_test_experiment
 from scripts.finetune_multi_seed import (
@@ -92,6 +92,10 @@ def run_xai():
     run_xai_experiment(experiment_key, precisions, num_samples, divergence_samples)
 
     print_section("XAI ANALYSIS COMPLETED")
+
+
+def run_xai_diagnostics_menu():
+    run_xai_diagnostics()
 
 
 def run_stress():
@@ -172,8 +176,9 @@ def main():
     print("  [3] XAI (Explainability Analysis)")
     print("  [4] Stress Test (Robustness Analysis)")
     print("  [5] Finetune (IndoBERT on SMSA)")
+    print("  [6] XAI Diagnostics (Alignment/Attention/IG Metrics)")
 
-    choice = input("\n  Enter choice (1/2/3/4/5): ").strip()
+    choice = input("\n  Enter choice (1/2/3/4/5/6): ").strip()
 
     if choice == "1":
         run_ptq()
@@ -185,6 +190,8 @@ def main():
         run_stress()
     elif choice == "5":
         run_finetune()
+    elif choice == "6":
+        run_xai_diagnostics_menu()
     else:
         print("\n  Invalid choice.")
 

@@ -16,7 +16,23 @@ from src.data import load_smsa_dataset, load_tweets_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
 from src.models.base import BaseModel
-from src.xai import LIMEExplainer, SHAPExplainer, IntegratedGradientsExplainer, OcclusionExplainer
+from src.xai import (
+    LIMEExplainer,
+    SHAPExplainer,
+    IntegratedGradientsExplainer,
+    OcclusionExplainer,
+    build_alignment_batch,
+    fragmentation_report,
+    analyze_attention_batch,
+    compare_attention_batch,
+    aggregate_attention_comparisons,
+    save_attention_results,
+    save_attention_comparisons,
+    attribution_similarity,
+    integrated_gradients_tokens,
+    InsertionDeletionEvaluator,
+    layer_cls_similarity,
+)
 from src.utils import print_section, set_seed
 
 warnings.filterwarnings('ignore')
@@ -41,6 +57,68 @@ def select_samples(dataset_samples, num_samples=3):
                     break
 
     return selected[:num_samples]
+
+
+def _resolve_config(version_key):
+    is_qat = _is_qat_experiment(version_key)
+    config = QAT_EXPERIMENT_CONFIGS[version_key] if is_qat else EXPERIMENT_CONFIGS[version_key]
+    return is_qat, config
+
+
+def _resolve_samples(config, num_samples, divergence_samples):
+    if divergence_samples:
+        return divergence_samples
+    if config["dataset"] == "smsa":
+        all_samples = load_smsa_dataset()
+    else:
+        all_samples = load_tweets_dataset()
+    return select_samples(all_samples, num_samples)
+
+
+def _save_json(payload, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _load_models_for_precisions(version_key, precisions):
+    is_qat, config = _resolve_config(version_key)
+    models = {}
+
+    if is_qat:
+        for precision in precisions:
+            model_path = config["model_paths"].get(precision)
+            if not model_path or not Path(model_path).exists():
+                print(f"  Model not found for {precision.upper()}: {model_path}")
+                continue
+            print(f"  Loading QAT model: {model_path}")
+            models[precision] = ModelManager.load_model(model_path)
+        return models
+
+    print(f"\nLoading model: {config['model_id']}")
+    base_model = ModelManager.load_model(config["model_id"])
+
+    for precision in precisions:
+        if precision == "fp32":
+            models[precision] = base_model
+            continue
+
+        ptq = PTQQuantizer(base_model.model)
+        if precision == "fp16":
+            model_fp16, fp16_time = ptq.quantize_fp16()
+            print(f"  FP16 quantization: {fp16_time:.2f}s")
+            models[precision] = BaseModel(model_fp16, base_model.tokenizer)
+        elif precision == "int8":
+            model_int8, int8_time = ptq.quantize_int8()
+            print(f"  INT8 quantization: {int8_time:.2f}s")
+            models[precision] = BaseModel(model_int8, base_model.tokenizer, device=torch.device("cpu"))
+        elif precision == "int4":
+            model_int4, int4_time = ptq.quantize_int4()
+            print(f"  INT4 quantization: {int4_time:.2f}s")
+            models[precision] = BaseModel(model_int4, base_model.tokenizer)
+
+    return models
 
 
 def load_divergences(experiment_key):
@@ -882,6 +960,279 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
 
     print("\n  Prediction Summary:")
     generate_prediction_summary(all_lime, samples, precisions, comparison_dir)
+
+
+def run_alignment_diagnostics(version_key, num_samples, divergence_samples=None):
+    is_qat, config = _resolve_config(version_key)
+    samples = _resolve_samples(config, num_samples, divergence_samples)
+    texts = [s["text"] for s in samples]
+
+    if is_qat:
+        tokenizer_source = None
+        for model_path in config["model_paths"].values():
+            if Path(model_path).exists():
+                tokenizer_source = model_path
+                break
+        if tokenizer_source is None:
+            print("  No QAT model paths found for tokenizer.")
+            return
+        tokenizer = ModelManager.load_model(tokenizer_source).tokenizer
+    else:
+        tokenizer = ModelManager.load_model(config["model_id"]).tokenizer
+
+    print(f"\n  Running word-subword alignment for {len(texts)} samples...")
+    alignments = build_alignment_batch(texts, tokenizer, verbose=True)
+
+    report = fragmentation_report(alignments)
+    per_sample = []
+    for sample, alignment in zip(samples, alignments):
+        multi = [
+            {"index": idx, "word": word, "subwords": sw}
+            for idx, word, sw in alignment.words_with_multiple_subwords()
+        ]
+        per_sample.append({
+            "text": sample["text"],
+            "expected": sample["expected"],
+            "n_words": alignment.n_words,
+            "n_subwords": alignment.n_subwords,
+            "avg_fragments": alignment.average_fragmentation(),
+            "max_fragments": max(alignment.fragmentation_per_word) if alignment.fragmentation_per_word else 0,
+            "words_multi": multi,
+        })
+
+    output_dir = Path(config["output_dir"]) / "xai" / "diagnostics"
+    output_path = output_dir / "alignment_report.json"
+    payload = {
+        "experiment": version_key,
+        "n_samples": len(samples),
+        "summary": report,
+        "samples": per_sample,
+    }
+    _save_json(payload, output_path)
+    print(f"  Saved alignment report: {output_path}")
+
+
+def run_attention_diagnostics(version_key, precisions, num_samples, divergence_samples=None):
+    is_qat, config = _resolve_config(version_key)
+    samples = _resolve_samples(config, num_samples, divergence_samples)
+    texts = [s["text"] for s in samples]
+
+    print("\n  Loading models for attention diagnostics...")
+    models = _load_models_for_precisions(version_key, precisions)
+    if not models:
+        print("  No models available for attention diagnostics.")
+        return
+
+    output_dir = Path(config["output_dir"]) / "xai" / "diagnostics" / "attention"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    metadata = {
+        "experiment": version_key,
+        "precisions": list(models.keys()),
+        "n_samples": len(samples),
+        "mode": "divergence" if divergence_samples else "auto",
+    }
+
+    available = []
+    for precision, model in models.items():
+        print(f"\n  Analyzing attention for {precision.upper()}...")
+        try:
+            results = analyze_attention_batch(
+                texts,
+                model.model,
+                model.tokenizer,
+                precision=precision,
+                device=model.device,
+                keep_layer_rollouts=False,
+                verbose=True,
+            )
+        except RuntimeError as exc:
+            print(f"  Skipping {precision.upper()} attention: {exc}")
+            continue
+
+        save_attention_results(
+            results,
+            output_dir / f"attention_{precision}.json",
+            metadata=metadata,
+        )
+        available.append(precision)
+
+    if len(available) < 2:
+        print("  Need at least two attention results to compare.")
+        return
+
+    base_precision = available[0]
+    base_model = models[base_precision]
+    for variant_precision in available[1:]:
+        variant_model = models[variant_precision]
+        print(f"\n  Comparing attention: {base_precision.upper()} vs {variant_precision.upper()}...")
+        try:
+            comparisons = compare_attention_batch(
+                texts,
+                base_model.model,
+                variant_model.model,
+                base_model.tokenizer,
+                base_precision=base_precision,
+                variant_precision=variant_precision,
+                device=base_model.device,
+                verbose=True,
+            )
+        except RuntimeError as exc:
+            print(f"  Skipping comparison {variant_precision.upper()}: {exc}")
+            continue
+
+        save_attention_comparisons(
+            comparisons,
+            output_dir / f"attention_compare_{base_precision}_vs_{variant_precision}.json",
+            metadata=metadata,
+        )
+        summary = aggregate_attention_comparisons(comparisons)
+        _save_json(
+            summary,
+            output_dir / f"attention_summary_{base_precision}_vs_{variant_precision}.json",
+        )
+
+
+def run_ig_metrics_diagnostics(version_key, base_precision, variant_precision, num_samples, divergence_samples=None):
+    is_qat, config = _resolve_config(version_key)
+    samples = _resolve_samples(config, num_samples, divergence_samples)
+    texts = [s["text"] for s in samples]
+
+    print("\n  Loading models for IG metrics...")
+    models = _load_models_for_precisions(version_key, [base_precision, variant_precision])
+    base_model = models.get(base_precision)
+    variant_model = models.get(variant_precision)
+    if base_model is None or variant_model is None:
+        print("  Missing models for the requested precisions.")
+        return
+
+    tokenizer = base_model.tokenizer
+    base_eval = InsertionDeletionEvaluator(tokenizer, base_model.device)
+    variant_eval = InsertionDeletionEvaluator(tokenizer, variant_model.device)
+
+    per_sample = []
+    sim_cos = []
+    sim_spear = []
+    sim_topk = []
+    cls_sims = []
+    del_auc_base = []
+    ins_auc_base = []
+    del_auc_var = []
+    ins_auc_var = []
+
+    for sample, text in zip(samples, texts):
+        sim = attribution_similarity(base_model.model, variant_model.model, tokenizer, text)
+        cls_sim = layer_cls_similarity(base_model.model, variant_model.model, tokenizer, text)
+
+        tokens_b, attrs_b = integrated_gradients_tokens(base_model.model, tokenizer, text)
+        tokens_v, attrs_v = integrated_gradients_tokens(variant_model.model, tokenizer, text)
+
+        id_base = base_eval.evaluate(base_model.model, tokens_b, attrs_b)
+        id_var = variant_eval.evaluate(variant_model.model, tokens_v, attrs_v)
+
+        per_sample.append({
+            "text": text,
+            "expected": sample["expected"],
+            "similarity": sim,
+            "cls_similarity": cls_sim,
+            "base": {
+                "precision": base_precision,
+                "tokens": tokens_b,
+                "attributions": attrs_b.tolist(),
+                "deletion_auc": id_base.deletion_auc,
+                "insertion_auc": id_base.insertion_auc,
+            },
+            "variant": {
+                "precision": variant_precision,
+                "tokens": tokens_v,
+                "attributions": attrs_v.tolist(),
+                "deletion_auc": id_var.deletion_auc,
+                "insertion_auc": id_var.insertion_auc,
+            },
+        })
+
+        sim_cos.append(sim["cosine"])
+        sim_spear.append(sim["spearman"])
+        sim_topk.append(sim["topk_overlap"])
+        cls_sims.append(cls_sim)
+        del_auc_base.append(id_base.deletion_auc)
+        ins_auc_base.append(id_base.insertion_auc)
+        del_auc_var.append(id_var.deletion_auc)
+        ins_auc_var.append(id_var.insertion_auc)
+
+    cls_sims_arr = np.array(cls_sims, dtype=np.float64) if cls_sims else np.array([])
+    cls_mean = cls_sims_arr.mean(axis=0).tolist() if cls_sims_arr.size else []
+
+    summary = {
+        "experiment": version_key,
+        "base_precision": base_precision,
+        "variant_precision": variant_precision,
+        "n_samples": len(samples),
+        "similarity_mean": {
+            "cosine": float(np.mean(sim_cos)) if sim_cos else 0.0,
+            "spearman": float(np.mean(sim_spear)) if sim_spear else 0.0,
+            "topk_overlap": float(np.mean(sim_topk)) if sim_topk else 0.0,
+        },
+        "cls_similarity_mean": cls_mean,
+        "deletion_auc": {
+            "base_mean": float(np.mean(del_auc_base)) if del_auc_base else 0.0,
+            "variant_mean": float(np.mean(del_auc_var)) if del_auc_var else 0.0,
+        },
+        "insertion_auc": {
+            "base_mean": float(np.mean(ins_auc_base)) if ins_auc_base else 0.0,
+            "variant_mean": float(np.mean(ins_auc_var)) if ins_auc_var else 0.0,
+        },
+    }
+
+    output_dir = Path(config["output_dir"]) / "xai" / "diagnostics"
+    output_path = output_dir / f"ig_metrics_{base_precision}_vs_{variant_precision}.json"
+    payload = {"summary": summary, "samples": per_sample}
+    _save_json(payload, output_path)
+    print(f"  Saved IG metrics: {output_path}")
+
+
+def run_xai_diagnostics():
+    experiment_key, precisions, num_samples, divergence_samples = interactive_menu()
+
+    print("\n" + "=" * 80)
+    print(f"STARTING XAI DIAGNOSTICS: {experiment_key}")
+    print(f"Precisions: {', '.join(precisions)}")
+    if divergence_samples:
+        print(f"Mode: Divergence analysis ({len(divergence_samples)} samples)")
+    else:
+        print(f"Mode: Auto-select ({num_samples} samples)")
+    print("=" * 80)
+
+    print("\n  Select Diagnostics:")
+    print("  [1] Word-Subword Alignment")
+    print("  [2] Attention Diagnostics")
+    print("  [3] IG Metrics")
+    print("  [4] All")
+
+    diag_choice = input("\n  Enter choice (1/2/3/4): ").strip()
+
+    if diag_choice in ("1", "4"):
+        run_alignment_diagnostics(experiment_key, num_samples, divergence_samples)
+
+    if diag_choice in ("2", "4"):
+        run_attention_diagnostics(experiment_key, precisions, num_samples, divergence_samples)
+
+    if diag_choice in ("3", "4"):
+        if len(precisions) < 2:
+            print("\n  IG metrics require at least two precisions.")
+        else:
+            base_precision = precisions[0]
+            variant_precision = precisions[1]
+            print(f"\n  IG metrics pair: {base_precision.upper()} vs {variant_precision.upper()}")
+            run_ig_metrics_diagnostics(
+                experiment_key,
+                base_precision,
+                variant_precision,
+                num_samples,
+                divergence_samples,
+            )
+
+    print_section("XAI DIAGNOSTICS COMPLETED")
 
 
 if __name__ == "__main__":
