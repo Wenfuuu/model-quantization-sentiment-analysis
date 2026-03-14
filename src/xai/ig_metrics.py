@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple
 
+import warnings
 import numpy as np
 import torch
 from captum.attr import IntegratedGradients
@@ -44,12 +45,22 @@ def integrated_gradients_tokens(
 
     ig = IntegratedGradients(lambda e: forward_fn(e, attention_mask))
 
-    attributions = ig.attribute(
-        embeddings,
-        target=target_class,
-        n_steps=30,
-        baselines=torch.zeros_like(embeddings),
-    )
+    try:
+        attributions = ig.attribute(
+            embeddings,
+            target=target_class,
+            n_steps=30,
+            baselines=torch.zeros_like(embeddings),
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "not have been used in the graph" not in msg:
+            raise
+        warnings.warn(
+            "Returning zero attributions.",
+            RuntimeWarning,
+        )
+        attributions = torch.zeros_like(embeddings)
 
     token_attrs = attributions.sum(dim=-1).squeeze().detach().cpu().numpy()
     tokens = tokenizer.convert_ids_to_tokens(input_ids[0].cpu())

@@ -1,3 +1,4 @@
+import warnings
 import torch
 from captum.attr import IntegratedGradients
 
@@ -25,12 +26,22 @@ class IntegratedGradientsExplainer:
             return self.model(inputs_embeds=embeds, attention_mask=attention_mask).logits
 
         ig = IntegratedGradients(forward_fn)
-        attributions = ig.attribute(
-            embeddings,
-            target=target_class,
-            n_steps=steps,
-            baselines=torch.zeros_like(embeddings),
-        )
+        try:
+            attributions = ig.attribute(
+                embeddings,
+                target=target_class,
+                n_steps=steps,
+                baselines=torch.zeros_like(embeddings),
+            )
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "not have been used in the graph" not in msg:
+                raise
+            warnings.warn(
+                "Returning zero attributions.",
+                RuntimeWarning,
+            )
+            attributions = torch.zeros_like(embeddings)
 
         scores = attributions.sum(dim=-1).squeeze().detach().cpu().numpy()
         tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0].cpu())
