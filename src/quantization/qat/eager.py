@@ -1,3 +1,5 @@
+import ctypes
+import gc
 import os
 import re
 import time
@@ -35,6 +37,19 @@ class EagerQATTrainer:
         self.config = config
         self.quantization_type = quantization_type
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+
+    @staticmethod
+    def _get_rss_mb():
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024
+        return 0
+
+    @staticmethod
+    def _release_memory():
+        gc.collect()
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
 
     def _preprocess_text(self, text):
         if not isinstance(text, str):
@@ -454,6 +469,11 @@ class EagerQATTrainer:
                     {'input_ids': input_ids, 'attention_mask': attention_mask},
                 )
 
+            outputs = session.run(
+                None,
+                {'input_ids': input_ids, 'attention_mask': attention_mask},
+            )
+
             sample_latencies = []
             for _ in range(num_runs):
                 start_time = time.time()
@@ -464,7 +484,7 @@ class EagerQATTrainer:
                 elapsed = time.time() - start_time
                 sample_latencies.append(elapsed)
 
-            per_sample_latencies.append(float(np.mean(sample_latencies)))
+            per_sample_latencies.append(float(np.mean(sample_latencies)) if sample_latencies else 0.0)
 
             logits = outputs[0]
             probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
@@ -527,7 +547,7 @@ class EagerQATTrainer:
         plt.close()
         return cm
 
-    def evaluate_onnx(self, onnx_model_path=None, dataset_path=None):
+    def evaluate_onnx(self, onnx_model_path=None, dataset_path=None, num_runs=20):
         import onnxruntime as ort
         if onnx_model_path is None:
             save_path = str(self.config.save_dir)
@@ -545,8 +565,7 @@ class EagerQATTrainer:
         fp32_onnx_path = os.path.join(save_path, "model_qat.onnx")
         results_dir = str(self.config.results_dir)
         os.makedirs(results_dir, exist_ok=True)
-        num_runs = 20
-        warmup_runs = 5
+        warmup_runs = 5 if num_runs > 0 else 0
         label_names = [
             self.config.id2label[i].capitalize()
             for i in range(self.config.num_labels)
@@ -569,11 +588,21 @@ class EagerQATTrainer:
 
         fp32_sess_options = ort.SessionOptions()
         fp32_sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self._release_memory()
+        mem_before = self._get_rss_mb()
         fp32_session = ort.InferenceSession(
             fp32_onnx_path, fp32_sess_options,
             providers=['CPUExecutionProvider'],
         )
-        fp32_memory_mb = os.path.getsize(fp32_onnx_path) / (1024 * 1024)
+        _sample = tokenized_dataset['test'][0]
+        fp32_session.run(
+            None,
+            {
+                'input_ids': np.array([_sample['input_ids']], dtype=np.int64),
+                'attention_mask': np.array([_sample['attention_mask']], dtype=np.int64),
+            },
+        )
+        fp32_memory_mb = self._get_rss_mb() - mem_before
         print(f"FP32 ONNX model loaded: {fp32_onnx_path}")
 
         print(f"\nRunning FP32 inference ({warmup_runs} warm-up + {num_runs} timed runs per sample)...")
@@ -602,6 +631,7 @@ class EagerQATTrainer:
         print(f"FP32 confusion matrix saved to: {fp32_cm_path}")
 
         del fp32_session
+        self._release_memory()
 
         if self.quantization_type == "fp32":
             fp32_results_data = {
@@ -634,11 +664,21 @@ class EagerQATTrainer:
                 ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
 
+        self._release_memory()
+        mem_before = self._get_rss_mb()
         session = ort.InferenceSession(
             onnx_model_path, sess_options,
             providers=['CPUExecutionProvider'],
         )
-        quant_memory_mb = os.path.getsize(onnx_model_path) / (1024 * 1024)
+        _sample = tokenized_dataset['test'][0]
+        session.run(
+            None,
+            {
+                'input_ids': np.array([_sample['input_ids']], dtype=np.int64),
+                'attention_mask': np.array([_sample['attention_mask']], dtype=np.int64),
+            },
+        )
+        quant_memory_mb = self._get_rss_mb() - mem_before
         print(f"Quantized ONNX model loaded: {onnx_model_path}")
         print(f"Provider: {session.get_providers()}")
 

@@ -40,20 +40,7 @@ EXPERIMENT_CONFIGS = {
         "num_inference_runs": 20,
         "warmup_runs": 5,
     },
-    "original_tweets": {
-        "model_id": "indobenchmark/indobert-base-p2",
-        "dataset": "tweets",
-        "output_dir": BASE_DIR / "outputs" / "original-tweets",
-        "num_inference_runs": 20,
-        "warmup_runs": 5,
-    },
-    "finetuned_tweets": {
-        "model_id": str(BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"),
-        "dataset": "tweets",
-        "output_dir": BASE_DIR / "outputs" / "finetuned-tweets",
-        "num_inference_runs": 20,
-        "warmup_runs": 5,
-    },
+
 }
 
 QAT_EXPERIMENT_CONFIGS = {
@@ -66,15 +53,7 @@ QAT_EXPERIMENT_CONFIGS = {
         "dataset": "smsa",
         "output_dir": BASE_DIR / "outputs" / "qat-eager-smsa",
     },
-    "qat_fake_smsa": {
-        "model_paths": {
-            "int8": str(BASE_DIR / "outputs" / "indobert-smsa-qat-int8-fake"),
-            "fp16": str(BASE_DIR / "outputs" / "indobert-smsa-qat-fp16-fake"),
-            "int4": str(BASE_DIR / "outputs" / "indobert-smsa-qat-int4-fake"),
-        },
-        "dataset": "smsa",
-        "output_dir": BASE_DIR / "outputs" / "qat-fake-smsa",
-    },
+
 }
 
 DATASET_PATHS = {

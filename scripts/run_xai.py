@@ -1,4 +1,5 @@
 import sys
+import time
 import torch
 import json
 import warnings
@@ -43,19 +44,179 @@ def select_samples(dataset_samples, num_samples=3):
 
 
 def load_divergences(experiment_key):
-    config = EXPERIMENT_CONFIGS[experiment_key]
+    if experiment_key in QAT_EXPERIMENT_CONFIGS:
+        config = QAT_EXPERIMENT_CONFIGS[experiment_key]
+    else:
+        config = EXPERIMENT_CONFIGS[experiment_key]
     output_dir = Path(config["output_dir"])
     divergence_path = output_dir / "prediction_divergences.json"
-    
+
     if not divergence_path.exists():
-        print(f"\n  Divergence file not found: {divergence_path}")
-        print("  Please run PTQ experiment first to generate divergence data.")
         return None
-    
+
     with open(divergence_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    
+
     return data
+
+
+def generate_qat_divergences(experiment_key):
+    config = QAT_EXPERIMENT_CONFIGS[experiment_key]
+    output_dir = Path(config["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if config["dataset"] == "smsa":
+        test_samples = load_smsa_dataset()
+    else:
+        test_samples = load_tweets_dataset()
+
+    onnx_paths = {}
+    for precision, model_path in config["model_paths"].items():
+        candidate = Path(model_path).parent / f"model_qat_{precision}.onnx"
+        if candidate.exists():
+            onnx_paths[precision] = candidate
+
+    if onnx_paths:
+        import onnxruntime as ort
+        from transformers import AutoTokenizer as _HFTokenizer
+
+        available_precisions = list(onnx_paths.keys())
+        print(f"\n  QAT eager ONNX models found: {', '.join(p.upper() for p in available_precisions)}")
+
+        tokenizer_source = next(
+            v for v in config["model_paths"].values() if Path(v).exists()
+        )
+        tokenizer = _HFTokenizer.from_pretrained(tokenizer_source)
+
+        sessions = {}
+        for precision, onnx_path in onnx_paths.items():
+            print(f"\n  Loading ONNX {precision.upper()}: {onnx_path}")
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+            opts.log_severity_level = 3
+            sessions[precision] = ort.InferenceSession(
+                str(onnx_path), opts, providers=["CPUExecutionProvider"]
+            )
+
+        print(f"\n  Running ONNX inference on {len(test_samples)} samples...")
+        all_preds = {p: [] for p in available_precisions}
+
+        for sample in test_samples:
+            text = sample["text"].lower().strip()
+            enc = tokenizer(
+                text,
+                truncation=True,
+                padding="max_length",
+                max_length=128,
+                return_tensors="np",
+            )
+            input_ids = enc["input_ids"].astype(np.int64)
+            attention_mask = enc["attention_mask"].astype(np.int64)
+
+            for precision, session in sessions.items():
+                logits = session.run(
+                    None,
+                    {"input_ids": input_ids, "attention_mask": attention_mask},
+                )[0]
+                probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
+                pred_idx = int(np.argmax(logits, axis=1)[0])
+                all_preds[precision].append({
+                    "label": LABELS[pred_idx],
+                    "confidence": float(probs[0, pred_idx]),
+                })
+
+    else:
+        available_precisions = []
+        models = {}
+
+        for precision, model_path in config["model_paths"].items():
+            if Path(model_path).exists():
+                print(f"\n  Loading QAT {precision.upper()} model: {model_path}")
+                models[precision] = ModelManager.load_model(model_path)
+                available_precisions.append(precision)
+            else:
+                print(f"\n  Skipping {precision.upper()}: model not found at {model_path}")
+
+        if len(available_precisions) < 2:
+            print("\n  Need at least 2 QAT models to compare divergences.")
+            return None
+
+        print(f"\n  Running inference on {len(test_samples)} samples with {len(available_precisions)} models...")
+        all_preds = {p: [] for p in available_precisions}
+
+        for sample in test_samples:
+            for precision in available_precisions:
+                pred = models[precision].predict(sample["text"], use_fp16=(precision == "fp16"))
+                all_preds[precision].append({
+                    "label": pred["label"],
+                    "confidence": float(pred["confidence"]),
+                })
+
+    divergences = []
+    for i, sample in enumerate(test_samples):
+        preds_by_precision = {p: all_preds[p][i] for p in available_precisions}
+        labels_set = set(preds_by_precision[p]["label"] for p in available_precisions)
+        if len(labels_set) > 1:
+            divergences.append({
+                "sample_idx": i,
+                "text": sample["text"],
+                "expected": sample["expected"],
+                "predictions": preds_by_precision,
+            })
+
+    divergence_data = {
+        "experiment": experiment_key,
+        "total_samples": len(test_samples),
+        "num_divergences": len(divergences),
+        "divergences": divergences,
+    }
+
+    divergence_path = output_dir / "prediction_divergences.json"
+    with open(divergence_path, "w", encoding="utf-8") as f:
+        json.dump(divergence_data, f, ensure_ascii=False, indent=2)
+
+    print(f"\n  Found {len(divergences)} divergent samples out of {len(test_samples)} total")
+    print(f"  Saved to: {divergence_path}")
+
+    return divergence_data
+
+
+class OnnxBaseModel:
+    def __init__(self, session, tokenizer, hf_model, device):
+        self.session = session
+        self.tokenizer = tokenizer
+        self.model = hf_model
+        self.device = device
+
+    def predict(self, text, use_fp16=False):
+        text = text.lower().strip()
+        enc = self.tokenizer(
+            text,
+            truncation=True,
+            padding="max_length",
+            max_length=128,
+            return_tensors="np",
+        )
+        input_ids = enc["input_ids"].astype(np.int64)
+        attention_mask = enc["attention_mask"].astype(np.int64)
+
+        start_time = time.perf_counter()
+        logits = self.session.run(
+            None,
+            {"input_ids": input_ids, "attention_mask": attention_mask},
+        )[0]
+        end_time = time.perf_counter()
+
+        probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
+        pred_idx = int(np.argmax(logits, axis=1)[0])
+
+        return {
+            "label": LABELS[pred_idx],
+            "class_id": pred_idx,
+            "confidence": float(probs[0, pred_idx]),
+            "probabilities": {LABELS[i]: float(probs[0, i]) for i in range(len(LABELS))},
+            "inference_time": end_time - start_time,
+        }
 
 
 def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
@@ -363,15 +524,8 @@ def interactive_menu():
 
     model_choice = input("\n  Enter choice (1/2): ").strip()
 
-    print("\n  Select Dataset:")
-    print("  [1] SMSA (test.tsv)")
-    print("  [2] Tweets (INA_TweetsPPKM)")
-
-    dataset_choice = input("\n  Enter choice (1/2): ").strip()
-
     model = "original" if model_choice == "1" else "finetuned"
-    dataset = "smsa" if dataset_choice == "1" else "tweets"
-    experiment_key = f"{model}_{dataset}"
+    experiment_key = f"{model}_smsa"
 
     print("\n  Sample Selection Mode:")
     print("  [1] Auto-select by label diversity")
@@ -462,7 +616,7 @@ def interactive_menu():
                 all_precs = ["fp32", "fp16", "int8", "int4"]
                 print(f"\n  {len(filtered)} divergent samples found:")
                 for idx, d in enumerate(filtered, 1):
-                    preds_str = "  ".join(f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.1f}%)" for p in all_precs)
+                    preds_str = "  ".join(f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.4f}%)" for p in all_precs)
                     print(f"\n  [{idx}] Sample #{d['sample_idx']+1}: Expected={d['expected']}")
                     print(f"      {preds_str}")
                     print(f"      \"{d['text']}\"")
@@ -511,16 +665,62 @@ def interactive_menu():
 
 
 def _qat_menu():
-    print("\n  Select QAT Method:")
-    print("  [1] Eager (ONNX pipeline models)")
-    print("  [2] Fake  (HuggingFace saved models)")
+    experiment_key = "qat_eager_smsa"
 
-    qat_method_choice = input("\n  Enter choice (1/2): ").strip()
+    print("\n  Sample Selection Mode:")
+    print("  [1] Auto-select by label diversity")
+    print("  [2] From prediction divergences (find where quantizations disagree)")
 
-    if qat_method_choice == "1":
-        experiment_key = "qat_eager_smsa"
-    else:
-        experiment_key = "qat_fake_smsa"
+    sample_mode = input("\n  Enter choice (1/2): ").strip()
+
+    if sample_mode == "2":
+        div_data = load_divergences(experiment_key)
+
+        if div_data is None:
+            print("\n  No divergence file found. Generating by comparing QAT models...")
+            div_data = generate_qat_divergences(experiment_key)
+
+        if div_data is None:
+            print("\n  Cannot generate divergences (models not found). Switching to auto-select.")
+            sample_mode = "1"
+        else:
+            divergences = div_data["divergences"]
+
+            if not divergences:
+                print("\n  No divergences found - all QAT models agree on every sample!")
+                print("  Switching to auto-select mode.")
+                sample_mode = "1"
+            else:
+                available_precisions = list(divergences[0]["predictions"].keys())
+
+                print(f"\n  Found {len(divergences)} divergent samples (out of {div_data['total_samples']} total)")
+                print(f"  Models compared: {', '.join(p.upper() for p in available_precisions)}")
+                print(f"\n  Divergent samples:")
+
+                for idx, d in enumerate(divergences, 1):
+                    preds_str = "  ".join(
+                        f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.4f}%)"
+                        for p in available_precisions
+                    )
+                    print(f"\n  [{idx}] Sample #{d['sample_idx']+1}: Expected={d['expected']}")
+                    print(f"      {preds_str}")
+                    print(f"      \"{d['text']}\"")
+
+                select_str = input(f"\n  Select samples: [A]ll or enter numbers (e.g., 1,3,5): ").strip()
+
+                if select_str.upper() == "A" or select_str == "":
+                    selected_divs = divergences
+                else:
+                    indices = [int(x.strip()) - 1 for x in select_str.split(",")]
+                    selected_divs = [divergences[i] for i in indices if 0 <= i < len(divergences)]
+
+                divergence_samples = [{"text": d["text"], "expected": d["expected"]} for d in selected_divs]
+                precisions = available_precisions
+
+                print(f"\n  Selected {len(divergence_samples)} divergent samples for XAI analysis")
+                print(f"  Precisions: {', '.join(p.upper() for p in precisions)}")
+
+                return experiment_key, precisions, len(divergence_samples), divergence_samples
 
     print("\n  Select Quantization Type:")
     print("  [1] INT8")
@@ -589,6 +789,7 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
     all_shap = {}
     all_ig = {}
     all_occ = {}
+    qat_hf_model = None
 
     for precision in precisions:
         print_section(f"COLLECTING XAI DATA - {precision.upper()}")
@@ -599,10 +800,29 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
                 print(f"  Model not found: {model_path}")
                 print(f"  Please run QAT training first.")
                 continue
-            print(f"  Loading QAT model: {model_path}")
-            qat_model = ModelManager.load_model(model_path)
-            use_fp16 = precision == "fp16"
-            lime_res, shap_res, ig_res, occ_res = collect_xai_results(qat_model, precision, samples, use_fp16=use_fp16)
+
+            onnx_path = Path(model_path).parent / f"model_qat_{precision}.onnx"
+            if onnx_path.exists():
+                import onnxruntime as ort
+                print(f"  Loading QAT ONNX {precision.upper()}: {onnx_path}")
+                opts = ort.SessionOptions()
+                opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+                opts.log_severity_level = 3
+                session = ort.InferenceSession(
+                    str(onnx_path), opts, providers=["CPUExecutionProvider"]
+                )
+                if qat_hf_model is None:
+                    print(f"  Loading HF model for IG: {model_path}")
+                    qat_hf_model = ModelManager.load_model(model_path, device=torch.device("cpu"))
+                onnx_model = OnnxBaseModel(
+                    session, qat_hf_model.tokenizer, qat_hf_model.model, torch.device("cpu")
+                )
+                lime_res, shap_res, ig_res, occ_res = collect_xai_results(onnx_model, precision, samples)
+            else:
+                print(f"  Loading QAT model: {model_path}")
+                qat_model = ModelManager.load_model(model_path)
+                use_fp16 = precision == "fp16"
+                lime_res, shap_res, ig_res, occ_res = collect_xai_results(qat_model, precision, samples, use_fp16=use_fp16)
 
         elif precision == "fp32":
             lime_res, shap_res, ig_res, occ_res = collect_xai_results(base_model, "fp32", samples)

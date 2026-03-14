@@ -70,9 +70,9 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     evaluator = ModelEvaluator(base_model)
     fp32_results = evaluator.evaluate(test_samples, num_runs=num_runs, warmup=warmup)
     
-    print(f"\nAccuracy: {fp32_results['accuracy']*100:.2f}%")
-    print(f"Avg Confidence: {fp32_results['avg_confidence']*100:.2f}%")
-    print(f"Mean Latency: {fp32_results['latency_stats']['mean']*1000:.2f} ms")
+    print(f"\nAccuracy: {fp32_results['accuracy']*100:.4f}%")
+    print(f"Avg Confidence: {fp32_results['avg_confidence']*100:.4f}%")
+    print(f"Mean Latency: {fp32_results['latency_stats']['mean']*1000:.4f} ms")
     
     fp32_path = output_dir / "model_fp32.pth"
     save_quantized_model(base_model.model, fp32_path)
@@ -96,9 +96,9 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     evaluator_fp16 = ModelEvaluator(base_model_fp16)
     fp16_results = evaluator_fp16.evaluate(test_samples, num_runs=num_runs, warmup=warmup, use_fp16=True)
     
-    print(f"\nAccuracy: {fp16_results['accuracy']*100:.2f}%")
-    print(f"Avg Confidence: {fp16_results['avg_confidence']*100:.2f}%")
-    print(f"Mean Latency: {fp16_results['latency_stats']['mean']*1000:.2f} ms")
+    print(f"\nAccuracy: {fp16_results['accuracy']*100:.4f}%")
+    print(f"Avg Confidence: {fp16_results['avg_confidence']*100:.4f}%")
+    print(f"Mean Latency: {fp16_results['latency_stats']['mean']*1000:.4f} ms")
     
     print_section("DYNAMIC QUANTIZATION (INT8)")
     
@@ -116,9 +116,9 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     evaluator_int8 = ModelEvaluator(base_model_int8)
     int8_results = evaluator_int8.evaluate(test_samples, num_runs=num_runs, warmup=warmup)
     
-    print(f"\nAccuracy: {int8_results['accuracy']*100:.2f}%")
-    print(f"Avg Confidence: {int8_results['avg_confidence']*100:.2f}%")
-    print(f"Mean Latency: {int8_results['latency_stats']['mean']*1000:.2f} ms")
+    print(f"\nAccuracy: {int8_results['accuracy']*100:.4f}%")
+    print(f"Avg Confidence: {int8_results['avg_confidence']*100:.4f}%")
+    print(f"Mean Latency: {int8_results['latency_stats']['mean']*1000:.4f} ms")
     
     print_section("INT4 QUANTIZATION")
     
@@ -136,9 +136,9 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     evaluator_int4 = ModelEvaluator(base_model_int4)
     int4_results = evaluator_int4.evaluate(test_samples, num_runs=num_runs, warmup=warmup)
     
-    print(f"\nAccuracy: {int4_results['accuracy']*100:.2f}%")
-    print(f"Avg Confidence: {int4_results['avg_confidence']*100:.2f}%")
-    print(f"Mean Latency: {int4_results['latency_stats']['mean']*1000:.2f} ms")
+    print(f"\nAccuracy: {int4_results['accuracy']*100:.4f}%")
+    print(f"Avg Confidence: {int4_results['avg_confidence']*100:.4f}%")
+    print(f"Mean Latency: {int4_results['latency_stats']['mean']*1000:.4f} ms")
     
     print_section("QUANTIZATION COMPARISON SUMMARY")
     
@@ -203,7 +203,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     
     if divergences:
         for d in divergences[:10]:
-            preds_str = "  ".join(f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.1f}%)" for p in precisions_list)
+            preds_str = "  ".join(f"{p.upper()}={d['predictions'][p]['label']}({d['predictions'][p]['confidence']*100:.4f}%)" for p in precisions_list)
             print(f"\n  Sample #{d['sample_idx']+1}: Expected={d['expected']}")
             print(f"    {preds_str}")
         if len(divergences) > 10:
@@ -286,13 +286,6 @@ def interactive_menu():
 
     model_choice = input("\n  Enter choice (1/2/3): ").strip()
 
-    print("\n  Select Dataset:")
-    print("  [1] SMSA (test.tsv)")
-    print("  [2] Tweets (INA_TweetsPPKM)")
-    print("  [3] Both")
-
-    dataset_choice = input("\n  Enter choice (1/2/3): ").strip()
-
     num_runs_str = input("\n  Number of inference runs per sample (default 20, 0 = skip latency benchmark): ").strip()
     num_runs_input = int(num_runs_str) if num_runs_str else None
 
@@ -304,18 +297,9 @@ def interactive_menu():
     else:
         models = ["original", "finetuned"]
 
-    datasets = []
-    if dataset_choice == "1":
-        datasets = ["smsa"]
-    elif dataset_choice == "2":
-        datasets = ["tweets"]
-    else:
-        datasets = ["smsa", "tweets"]
-
     selected = []
     for m in models:
-        for d in datasets:
-            selected.append(f"{m}_{d}")
+        selected.append(f"{m}_smsa")
 
     return selected, num_runs_input
 
