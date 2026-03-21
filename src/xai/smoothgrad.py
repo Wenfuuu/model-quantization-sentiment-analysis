@@ -10,6 +10,9 @@ from captum.attr import IntegratedGradients
 from captum.attr import NoiseTunnel
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+from .integrated_gradients import IG_SUPPORTED_PRECISIONS
+
+
 def _get_word_embeddings(model: AutoModelForSequenceClassification):
     if hasattr(model, "bert"):
         return model.bert.embeddings.word_embeddings
@@ -192,6 +195,13 @@ class SmoothGradExplainer:
         text:          str,
         target:        Optional[int] = None,
     ) -> SmoothGradResult:
+        if self.precision not in IG_SUPPORTED_PRECISIONS:
+            raise ValueError(
+                f"SmoothGrad (IG-based) is not supported for precision='{self.precision}'. "
+                f"Supported: {sorted(IG_SUPPORTED_PRECISIONS)}. "
+                "Dynamic INT8/INT4 quantization breaks autograd."
+            )
+
         input_ids, attention_mask, embeddings = self._encode(text)
 
         with torch.no_grad():
@@ -240,6 +250,13 @@ class SmoothGradExplainer:
         text:   str,
         target: Optional[int] = None,
     ) -> SmoothGradResult:
+        if self.precision not in IG_SUPPORTED_PRECISIONS:
+            raise ValueError(
+                f"SmoothGrad (IG-based) is not supported for precision='{self.precision}'. "
+                f"Supported: {sorted(IG_SUPPORTED_PRECISIONS)}. "
+                "Dynamic INT8/INT4 quantization breaks autograd."
+            )
+
         input_ids, attention_mask, embeddings = self._encode(text)
 
         with torch.no_grad():
