@@ -492,6 +492,15 @@ def generate_ig_comparison(all_ig, samples, precisions, output_dir):
         for col, precision in enumerate(precisions):
             ax = axes[col]
             ig_data = all_ig[precision][sample_idx]
+
+            if ig_data is None:
+                ax.text(0.5, 0.5, "IG not available\n(dynamic quantization\nbreaks autograd)",
+                        ha="center", va="center", transform=ax.transAxes,
+                        fontsize=9, color="gray", style="italic")
+                ax.set_title(f"{precision.upper()}\n[not supported]", fontweight='bold')
+                ax.set_xlabel("IG attribution")
+                continue
+
             tokens = ig_data["tokens"]
             scores = ig_data["scores"]
 
