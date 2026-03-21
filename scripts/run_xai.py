@@ -40,21 +40,31 @@ warnings.filterwarnings('ignore')
 set_seed(42)
 
 
-def select_samples(dataset_samples, num_samples=3):
+def select_samples(dataset_samples, num_samples=50):
+    import random as _random
     by_label = {}
     for sample in dataset_samples:
         label = sample["expected"]
-        if label not in by_label:
-            by_label[label] = sample
+        by_label.setdefault(label, []).append(sample)
 
-    selected = list(by_label.values())
+    labels = sorted(by_label.keys())
+    n_labels = len(labels)
+    per_label = max(1, num_samples // n_labels)
 
-    if len(selected) < num_samples:
-        for sample in dataset_samples:
-            if sample not in selected:
-                selected.append(sample)
-                if len(selected) >= num_samples:
-                    break
+    rng = _random.Random(42)
+    selected = []
+    for label in labels:
+        pool = by_label[label]
+        rng.shuffle(pool)
+        selected.extend(pool[:per_label])
+
+    # Top up to num_samples if rounding left us short
+    remaining = [s for s in dataset_samples if s not in set(map(id, selected))]
+    rng.shuffle(remaining)
+    for s in remaining:
+        if len(selected) >= num_samples:
+            break
+        selected.append(s)
 
     return selected[:num_samples]
 
@@ -340,16 +350,26 @@ def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
         })
 
     print(f"  Running Integrated Gradients for {precision_name.upper()}...")
-    ig_explainer = IntegratedGradientsExplainer(base_model.model, base_model.tokenizer, device=base_model.device)
+    from src.xai.integrated_gradients import IG_SUPPORTED_PRECISIONS
     label_names = [LABELS[j] for j in sorted(LABELS.keys())]
-    for i, sample in enumerate(samples):
-        print(f"    Sample {i+1}/{len(samples)}")
-        ig_result = ig_explainer.explain(sample["text"], steps=30)
-        ig_results.append({
-            "predicted_label": label_names[ig_result["predicted_class"]],
-            "tokens": ig_result["tokens"],
-            "scores": ig_result["scores"].tolist() if hasattr(ig_result["scores"], "tolist") else list(ig_result["scores"]),
-        })
+    if precision_name not in IG_SUPPORTED_PRECISIONS:
+        print(f"    [SKIP] IG not supported for {precision_name.upper()} "
+              f"(dynamic quantization breaks autograd). "
+              f"Supported precisions: {sorted(IG_SUPPORTED_PRECISIONS)}")
+        ig_results = [None] * len(samples)
+    else:
+        ig_explainer = IntegratedGradientsExplainer(
+            base_model.model, base_model.tokenizer,
+            device=base_model.device, precision=precision_name,
+        )
+        for i, sample in enumerate(samples):
+            print(f"    Sample {i+1}/{len(samples)}")
+            ig_result = ig_explainer.explain(sample["text"], steps=30)
+            ig_results.append({
+                "predicted_label": label_names[ig_result["predicted_class"]],
+                "tokens": ig_result["tokens"],
+                "scores": ig_result["scores"].tolist() if hasattr(ig_result["scores"], "tolist") else list(ig_result["scores"]),
+            })
 
     print(f"  Running Occlusion for {precision_name.upper()}...")
     for i, sample in enumerate(samples):
@@ -725,8 +745,8 @@ def interactive_menu():
 
         precision_choice = input("\n  Enter choice (1/2/3/4/5): ").strip()
 
-        num_samples_str = input("\n  Number of samples to explain (default 3): ").strip()
-        num_samples = int(num_samples_str) if num_samples_str else 3
+        num_samples_str = input("\n  Number of samples to explain (default 50): ").strip()
+        num_samples = int(num_samples_str) if num_samples_str else 50
 
         if precision_choice == "1":
             precisions = ["fp32"]
@@ -934,15 +954,62 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
         for i in range(len(samples)):
             lr = lime_res[i]
             sr = shap_res[i]
-            ir = ig_res[i]
+            ir = ig_res[i]  # may be None for INT8/INT4
             oc = occ_res[i]
             print(f"\n  Sample {i+1}: Pred={lr['predicted_label']} | Expected={samples[i]['expected']}")
             print(f"    LIME top 3: {', '.join(f'{f[0]}({f[1]:+.3f})' for f in lr['top_features'][:3])}")
             print(f"    SHAP top 3: {', '.join(f'{t[0]}({t[1]:+.3f})' for t in sr['token_importance'][:3])}")
-            ig_tokens_scores = [(ir['tokens'][j], ir['scores'][j]) for j in range(len(ir['tokens'])) if ir['tokens'][j] not in ['[CLS]', '[SEP]', '[PAD]']]
-            ig_sorted = sorted(ig_tokens_scores, key=lambda x: abs(x[1]), reverse=True)[:3]
-            print(f"    IG top 3: {', '.join(f'{t}({s:+.3f})' for t, s in ig_sorted)}")
+            if ir is not None:
+                ig_tokens_scores = [
+                    (ir['tokens'][j], ir['scores'][j])
+                    for j in range(len(ir['tokens']))
+                    if ir['tokens'][j] not in ['[CLS]', '[SEP]', '[PAD]']
+                ]
+                ig_sorted = sorted(ig_tokens_scores, key=lambda x: abs(x[1]), reverse=True)[:3]
+                print(f"    IG top 3: {', '.join(f'{t}({s:+.3f})' for t, s in ig_sorted)}")
+            else:
+                print(f"    IG: [not available for {precision} — gradient-based method requires FP32/FP16]")
             print(f"    Occlusion top 3: {', '.join(f'{t[0]}({t[1]:+.3f})' for t in oc['token_importance'][:3])}")
+
+    # --- Subword aggregation comparison (sum vs mean) for IG --------------------
+    # Reviewer note: summing subword attributions inflates scores for
+    # morphologically complex tokens (e.g. reduplication, affixation).
+    # Mean-pooling is the recommended primary strategy; both are reported
+    # so the paper can discuss the difference.
+    _ig_precisions_with_data = [p for p in precisions if all_ig.get(p) and all_ig[p][0] is not None]
+    if len(_ig_precisions_with_data) >= 2:
+        from src.xai.alignment import build_alignment_batch, project_subword_to_word
+        _texts = [s["text"] for s in samples]
+        # Use tokenizer from the base model (FP32 — same vocab for all variants)
+        if not is_qat and "fp32" in precisions:
+            _tokenizer = base_model.tokenizer
+        else:
+            _tokenizer = ModelManager.load_model(config["model_id"]).tokenizer
+        _alignments = build_alignment_batch(_texts, _tokenizer, verbose=False)
+
+        _aggregation_report = {}
+        for _prec in _ig_precisions_with_data:
+            _sum_scores, _mean_scores = [], []
+            for _ig_r, _al in zip(all_ig[_prec], _alignments):
+                _sw_tokens = _ig_r["tokens"]
+                _sw_scores = _ig_r["scores"]
+                _, _ws = project_subword_to_word(_sw_tokens, _sw_scores, _al, strategy="sum")
+                _, _wm = project_subword_to_word(_sw_tokens, _sw_scores, _al, strategy="mean")
+                _sum_scores.append(_ws.tolist())
+                _mean_scores.append(_wm.tolist())
+            _aggregation_report[_prec] = {"sum": _sum_scores, "mean": _mean_scores}
+
+        _agg_path = comparison_dir / "subword_aggregation_comparison.json"
+        _agg_path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        with open(_agg_path, "w", encoding="utf-8") as _f:
+            _json.dump({
+                "note": "sum inflates morphologically complex tokens; mean is preferred for reduplication/affixation",
+                "precisions": _ig_precisions_with_data,
+                "aggregations": _aggregation_report,
+            }, _f, ensure_ascii=False, indent=2)
+        print(f"\n  Subword aggregation comparison (sum vs mean) saved: {_agg_path}")
+    # ---------------------------------------------------------------------------
 
     print_section("GENERATING COMPARISON CHARTS")
 

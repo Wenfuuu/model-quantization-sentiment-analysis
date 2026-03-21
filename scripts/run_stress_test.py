@@ -1,3 +1,4 @@
+import json
 import sys
 import torch
 import warnings
@@ -18,13 +19,21 @@ from src.evaluation.stress_test import (
 )
 from src.utils import print_section
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "datasets"))
+from linguistic_probes import (
+    get_all_probes,
+    get_probe_samples,
+    probe_accuracy_by_phenomenon,
+)
+
 warnings.filterwarnings("ignore")
 
-ALL_TESTS = ["edge_case", "noise_robustness", "calibration"]
+ALL_TESTS = ["edge_case", "noise_robustness", "calibration", "linguistic_probes"]
 TEST_LABELS = {
     "edge_case": "Linguistic Edge Cases",
     "noise_robustness": "Input Noise Robustness",
     "calibration": "Calibration Under Stress (ECE)",
+    "linguistic_probes": "Linguistic Probe Accuracy (PSR)",
 }
 
 
@@ -156,6 +165,87 @@ def run_stress_test_experiment(version_key, tests=None):
             print(f"  {p.upper()}: ECE={r['ece']:.4f}  MCE={r['mce']:.4f}"
                   f"  overconf={r['overconfidence_rate']:.4f}"
                   f"  gap={r['confidence_accuracy_gap']:+.4f}")
+
+    if "linguistic_probes" in tests:
+        print_section("STRESS TEST 4: LINGUISTIC PROBES (PSR)")
+        probes = get_all_probes()
+        probe_samples = get_probe_samples(include_minimal_pairs=True)
+        primary_samples = get_probe_samples(include_minimal_pairs=False)
+
+        probe_results = {}
+        for precision, model in models.items():
+            use_fp16 = use_fp16_map.get(precision, False)
+            preds_primary = []
+            preds_pairs = []
+
+            for i, sample in enumerate(primary_samples):
+                pred = model.predict(sample["text"], use_fp16=use_fp16)
+                preds_primary.append({
+                    "predicted": pred["label"],
+                    "expected": sample["expected"],
+                    "confidence": pred["confidence"],
+                    "phenomenon": sample["meta"]["phenomenon"],
+                    "phenomenon_tokens": sample["meta"]["phenomenon_tokens"],
+                    "text": sample["text"],
+                })
+
+            direction_aware = []
+            for probe, pred in zip(probes, preds_primary):
+                if probe.minimal_pair is None:
+                    direction_aware.append(None)
+                    continue
+                pair_pred = model.predict(probe.minimal_pair, use_fp16=use_fp16)
+                original_label = pred["predicted"]
+                pair_label = pair_pred["label"]
+                flipped = original_label != pair_label
+                correct_direction = pair_label == probe.expected_label
+                direction_aware.append({
+                    "original_pred": original_label,
+                    "pair_pred": pair_label,
+                    "flipped": flipped,
+                    "correct_direction": correct_direction,
+                    "minimal_pair_text": probe.minimal_pair,
+                })
+
+            by_phenomenon = probe_accuracy_by_phenomenon(preds_primary, probes)
+
+            dir_psr = {}
+            for phenom in by_phenomenon:
+                entries = [
+                    d for d, p in zip(direction_aware, probes)
+                    if p.phenomenon == phenom and d is not None
+                ]
+                if entries:
+                    n_flipped_correct = sum(1 for e in entries if e["correct_direction"])
+                    dir_psr[phenom] = {
+                        "n_with_pair": len(entries),
+                        "n_correct_direction": n_flipped_correct,
+                        "direction_psr": n_flipped_correct / len(entries),
+                    }
+
+            probe_results[precision] = {
+                "by_phenomenon": by_phenomenon,
+                "direction_aware_psr": dir_psr,
+                "raw_predictions": preds_primary,
+            }
+
+        phenomena = list(probe_results[list(models.keys())[0]]["by_phenomenon"].keys())
+        for phenom in phenomena:
+            print(f"\n  [{phenom}]")
+            for p in models:
+                ph = probe_results[p]["by_phenomenon"].get(phenom, {})
+                acc = ph.get("accuracy", float("nan"))
+                total = ph.get("total", 0)
+                dir_ph = probe_results[p]["direction_aware_psr"].get(phenom, {})
+                dir_psr_val = dir_ph.get("direction_psr", float("nan"))
+                print(f"    {p.upper()}: acc={acc:.2f} ({ph.get('correct',0)}/{total})  "
+                      f"dir-PSR={dir_psr_val:.2f}")
+
+        probe_out = output_dir / "linguistic_probe_results.json"
+        with open(probe_out, "w", encoding="utf-8") as f:
+            json.dump(probe_results, f, ensure_ascii=False, indent=2)
+        print(f"\n  Saved: {probe_out}")
+        all_results["linguistic_probes"] = probe_results
 
     print_section("STRESS TEST COMPLETED")
     print(f"All results saved to: {output_dir}")
