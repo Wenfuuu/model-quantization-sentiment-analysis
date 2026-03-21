@@ -23,7 +23,6 @@ from scripts.finetune_multi_seed import (
     DEFAULT_SEEDS,
     _AGG_OUTPUT_FILE,
     _FINETUNE_SCRIPT,
-    _FINETUNE_SCRIPT_NO_SW,
 )
 from src.config import EXPERIMENT_CONFIGS
 from src.utils import print_section

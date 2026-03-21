@@ -58,7 +58,6 @@ def select_samples(dataset_samples, num_samples=50):
         rng.shuffle(pool)
         selected.extend(pool[:per_label])
 
-    # Top up to num_samples if rounding left us short
     remaining = [s for s in dataset_samples if s not in set(map(id, selected))]
     rng.shuffle(remaining)
     for s in remaining:
