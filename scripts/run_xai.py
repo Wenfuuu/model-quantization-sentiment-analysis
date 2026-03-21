@@ -58,7 +58,8 @@ def select_samples(dataset_samples, num_samples=50):
         rng.shuffle(pool)
         selected.extend(pool[:per_label])
 
-    remaining = [s for s in dataset_samples if s not in set(map(id, selected))]
+    selected_ids = set(map(id, selected))
+    remaining = [s for s in dataset_samples if id(s) not in selected_ids]
     rng.shuffle(remaining)
     for s in remaining:
         if len(selected) >= num_samples:
