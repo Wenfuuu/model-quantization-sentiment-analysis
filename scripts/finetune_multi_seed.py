@@ -23,9 +23,7 @@ _CKPT_TEMPLATE = "indobert-fp32-smsa-3label-seed{seed}"
 _AGG_OUTPUT_DIR  = _PROJECT_ROOT / "outputs" / "multi-seed"
 _AGG_OUTPUT_FILE = _AGG_OUTPUT_DIR / "aggregated_finetune_results.json"
 
-_FINETUNE_SCRIPT        = Path(__file__).parent / "finetune_smsa_fp32.py"
-_FINETUNE_SCRIPT_NO_SW  = Path(__file__).parent / "finetune_smsa_fp32_no_sw.py"
-
+_FINETUNE_SCRIPT        = Path(__file__).parent / "finetune_smsa_fp32_no_sw.py"
 _CKPT_TEMPLATE_NO_SW = "indobert-fp32-smsa-3label-no-sw-seed{seed}"
 
 def seed_checkpoint_dir(seed: int, ckpt_suffix: str = "") -> Path:
