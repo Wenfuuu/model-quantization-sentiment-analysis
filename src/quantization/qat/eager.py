@@ -1,4 +1,3 @@
-import ctypes
 import gc
 import os
 import re
@@ -40,16 +39,15 @@ class EagerQATTrainer:
 
     @staticmethod
     def _get_rss_mb():
-        with open('/proc/self/status') as f:
-            for line in f:
-                if line.startswith('VmRSS:'):
-                    return int(line.split()[1]) / 1024
-        return 0
+        try:
+            import psutil
+            return psutil.Process().memory_info().rss / (1024 * 1024)
+        except Exception:
+            return 0.0
 
     @staticmethod
     def _release_memory():
         gc.collect()
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
 
     def _preprocess_text(self, text):
         if not isinstance(text, str):
