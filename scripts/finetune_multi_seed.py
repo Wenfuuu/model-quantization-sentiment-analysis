@@ -18,16 +18,17 @@ from src.utils.seed_aggregation import (
 
 DEFAULT_SEEDS = [42, 123, 7]
 
-_CKPT_TEMPLATE = "indobert-fp32-smsa-3label-seed{seed}"
+_FINETUNE_SCRIPT = Path(__file__).parent / "finetune_smsa_fp32_no_sw.py"
+
+_CKPT_TEMPLATE      = "indobert-fp32-smsa-3label-no-sw-seed{seed}"
+_CKPT_TEMPLATE_SW   = "indobert-fp32-smsa-3label-seed{seed}"
 
 _AGG_OUTPUT_DIR  = _PROJECT_ROOT / "outputs" / "multi-seed"
 _AGG_OUTPUT_FILE = _AGG_OUTPUT_DIR / "aggregated_finetune_results.json"
 
-_FINETUNE_SCRIPT        = Path(__file__).parent / "finetune_smsa_fp32_no_sw.py"
-_CKPT_TEMPLATE_NO_SW = "indobert-fp32-smsa-3label-no-sw-seed{seed}"
 
 def seed_checkpoint_dir(seed: int, ckpt_suffix: str = "") -> Path:
-    template = _CKPT_TEMPLATE_NO_SW if ckpt_suffix == "-no-sw" else _CKPT_TEMPLATE
+    template = _CKPT_TEMPLATE_SW if ckpt_suffix == "-sw" else _CKPT_TEMPLATE
     return _PROJECT_ROOT / "finetuned-model" / template.format(seed=seed)
 
 
