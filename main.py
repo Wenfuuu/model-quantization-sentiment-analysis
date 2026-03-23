@@ -24,7 +24,7 @@ from scripts.finetune_multi_seed import (
     _AGG_OUTPUT_FILE,
     _FINETUNE_SCRIPT,
 )
-from src.config import EXPERIMENT_CONFIGS
+from scripts.finetune_fp32_multiseed import main as finetune_fp32_main, SEEDS as FP32_SEEDS
 from src.utils import print_section
 
 
@@ -152,6 +152,19 @@ def run_finetune():
     print_section("FINETUNING COMPLETED")
 
 
+def run_finetune_fp32():
+    print("\n" + "=" * 60)
+    print("  FINETUNING: IndoBERT FP32 — multi-seed + cross-domain eval")
+    print(f"  Seeds : {FP32_SEEDS}")
+    print("  Train : data/processed/smsa_train_v2.csv")
+    print("  Eval  : SmSA / CASA / HoASA")
+    print("=" * 60 + "\n")
+
+    finetune_fp32_main()
+
+    print_section("FP32 FINETUNING COMPLETED")
+
+
 def main():
     print("\n" + "=" * 60)
     print("  MODEL QUANTIZATION & SENTIMENT ANALYSIS")
@@ -162,10 +175,11 @@ def main():
     print("  [2] QAT (Quantization-Aware Training)")
     print("  [3] XAI (Explainability Analysis)")
     print("  [4] Stress Test (Robustness Analysis)")
-    print("  [5] Finetune (IndoBERT on SMSA)")
+    print("  [5] Finetune — legacy (IndoBERT on SMSA, multi-seed via subprocess)")
     print("  [6] XAI Diagnostics (Alignment/Attention/IG Metrics)")
+    print("  [7] Finetune FP32 (IndoBERT, seeds 42/123/456, cross-domain eval)")
 
-    choice = input("\n  Enter choice (1/2/3/4/5/6): ").strip()
+    choice = input("\n  Enter choice (1/2/3/4/5/6/7): ").strip()
 
     if choice == "1":
         run_ptq()
@@ -179,6 +193,8 @@ def main():
         run_finetune()
     elif choice == "6":
         run_xai_diagnostics_menu()
+    elif choice == "7":
+        run_finetune_fp32()
     else:
         print("\n  Invalid choice.")
 
