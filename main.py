@@ -26,6 +26,7 @@ from scripts.finetune_multi_seed import (
 )
 from scripts.finetune_fp32_multiseed import main as finetune_fp32_main, SEEDS as FP32_SEEDS
 from scripts.qat_fp32_multiseed import main as qat_fp32_main, SEEDS as QAT_SEEDS
+from scripts.ptq_fp32_multiseed import main as ptq_fp32_main, SEEDS as PTQ_SEEDS
 from src.utils import print_section
 
 
@@ -193,6 +194,21 @@ def run_qat_fp32():
     print_section("QAT FP32 COMPLETED")
 
 
+def run_ptq_fp32():
+    print("\n" + "=" * 60)
+    print("  PTQ: FP16/INT8/INT4 from FP32 checkpoints — multi-seed")
+    print(f"  Seeds    : {PTQ_SEEDS}")
+    print("  Source   : models/fp32_seed{SEED}/")
+    print("  Variants : FP16, INT8, INT4")
+    print("  Eval     : SmSA test set")
+    print("  Latency  : seed 42 only (20 runs, 5 warmup)")
+    print("=" * 60 + "\n")
+
+    ptq_fp32_main()
+
+    print_section("PTQ FP32 COMPLETED")
+
+
 def main():
     print("\n" + "=" * 60)
     print("  MODEL QUANTIZATION & SENTIMENT ANALYSIS")
@@ -207,8 +223,9 @@ def main():
     print("  [6] XAI Diagnostics (Alignment/Attention/IG Metrics)")
     print("  [7] Finetune FP32 (IndoBERT, seeds 42/123/456, cross-domain eval)")
     print("  [8] QAT FP32 (from FP32 checkpoints, seeds 42/123/456)")
+    print("  [9] PTQ FP32 (FP16/INT8/INT4 from FP32 checkpoints, seeds 42/123/456)")
 
-    choice = input("\n  Enter choice (1/2/3/4/5/6/7/8): ").strip()
+    choice = input("\n  Enter choice (1-9): ").strip()
 
     if choice == "1":
         run_ptq()
@@ -226,6 +243,8 @@ def main():
         run_finetune_fp32()
     elif choice == "8":
         run_qat_fp32()
+    elif choice == "9":
+        run_ptq_fp32()
     else:
         print("\n  Invalid choice.")
 
