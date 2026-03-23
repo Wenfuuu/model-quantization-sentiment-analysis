@@ -11,7 +11,6 @@ lime>=0.2.0
 shap>=0.42.0
 captum>=0.6.0
 datasets>=2.14.0
-PySastrawi>=1.2.0
 onnx>=1.14.0
 onnx-ir>=0.1.0
 onnxruntime>=1.15.0
