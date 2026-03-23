@@ -25,6 +25,7 @@ from scripts.finetune_multi_seed import (
     _FINETUNE_SCRIPT,
 )
 from scripts.finetune_fp32_multiseed import main as finetune_fp32_main, SEEDS as FP32_SEEDS
+from scripts.qat_fp32_multiseed import main as qat_fp32_main, SEEDS as QAT_SEEDS
 from src.utils import print_section
 
 
@@ -165,6 +166,21 @@ def run_finetune_fp32():
     print_section("FP32 FINETUNING COMPLETED")
 
 
+def run_qat_fp32():
+    print("\n" + "=" * 60)
+    print("  QAT: IndoBERT from FP32 checkpoints — multi-seed")
+    print(f"  Seeds  : {QAT_SEEDS}")
+    print("  Source : models/fp32_seed{SEED}/")
+    print("  Saves  : models/qat_seed{SEED}_with_observers/")
+    print("           models/qat_seed{SEED}_clean/")
+    print("  Eval   : SmSA / CASA / HoASA + agreement rate vs FP32")
+    print("=" * 60 + "\n")
+
+    qat_fp32_main()
+
+    print_section("QAT FP32 COMPLETED")
+
+
 def main():
     print("\n" + "=" * 60)
     print("  MODEL QUANTIZATION & SENTIMENT ANALYSIS")
@@ -178,8 +194,9 @@ def main():
     print("  [5] Finetune — legacy (IndoBERT on SMSA, multi-seed via subprocess)")
     print("  [6] XAI Diagnostics (Alignment/Attention/IG Metrics)")
     print("  [7] Finetune FP32 (IndoBERT, seeds 42/123/456, cross-domain eval)")
+    print("  [8] QAT FP32 (from FP32 checkpoints, seeds 42/123/456)")
 
-    choice = input("\n  Enter choice (1/2/3/4/5/6/7): ").strip()
+    choice = input("\n  Enter choice (1/2/3/4/5/6/7/8): ").strip()
 
     if choice == "1":
         run_ptq()
@@ -195,6 +212,8 @@ def main():
         run_xai_diagnostics_menu()
     elif choice == "7":
         run_finetune_fp32()
+    elif choice == "8":
+        run_qat_fp32()
     else:
         print("\n  Invalid choice.")
 
