@@ -123,20 +123,8 @@ def run_finetune():
 
     print("\n" + "=" * 60)
     print("  FINETUNING: IndoBERT on SMSA (3-label)")
+    print("  Preprocessing: lowercase + whitespace normalisation (no stopword removal)")
     print("=" * 60)
-    print("  Preprocessing:")
-    print("  [1] With stopwords removal (Sastrawi)")
-    print("  [2] Without stopwords removal")
-
-    sw_choice = input("\n  Enter choice (1/2): ").strip()
-    if sw_choice == "2":
-        finetune_script = _FINETUNE_SCRIPT_NO_SW
-        ckpt_suffix     = "-no-sw"
-        variant_label   = "WITHOUT stopwords removal"
-    else:
-        finetune_script = _FINETUNE_SCRIPT
-        ckpt_suffix     = ""
-        variant_label   = "WITH stopwords removal"
 
     seeds      = DEFAULT_SEEDS
     epochs     = 3
@@ -150,12 +138,12 @@ def run_finetune():
         batch_size=batch_size,
         no_skip=False,
         agg_output=str(_AGG_OUTPUT_FILE),
-        finetune_script=str(finetune_script),
-        ckpt_suffix=ckpt_suffix,
+        finetune_script=str(_FINETUNE_SCRIPT),
+        ckpt_suffix="",
     )
 
     print("\n" + "=" * 80)
-    print(f"STARTING FINETUNING - {len(seeds)} SEED(S) ({variant_label})")
+    print(f"STARTING FINETUNING - {len(seeds)} SEED(S)")
     print(f"  Seeds: {seeds} | Epochs: {epochs} | LR: {lr} | Batch: {batch_size}")
     print("=" * 80 + "\n")
 
