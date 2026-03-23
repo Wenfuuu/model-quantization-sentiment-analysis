@@ -371,6 +371,7 @@ def train_one_seed(seed: int) -> dict:
     clean_model = clean_model.to(DEVICE)
 
     all_metrics: dict[str, dict] = {}
+    smsa_pred_labels_int: list[int] | None = None
 
     for ds_name, csv_path in TEST_SETS.items():
         if not csv_path.exists():
@@ -386,6 +387,9 @@ def train_one_seed(seed: int) -> dict:
         metrics = compute_metrics(true_labels, pred_labels)
         all_metrics[ds_name] = metrics
 
+        if ds_name == "smsa":
+            smsa_pred_labels_int = pred_labels
+
         label_names = [ID2LABEL[i] for i in range(NUM_LABELS)]
         print(f"  accuracy={metrics['accuracy']:.4f}  "
               f"macro-F1={metrics['macro_f1']:.4f}  "
@@ -399,11 +403,8 @@ def train_one_seed(seed: int) -> dict:
 
     agreement_rate: float | None = None
     fp32_preds = load_fp32_smsa_preds(seed)
-    if fp32_preds is not None and "smsa" in all_metrics:
-        smsa_ds    = SentimentCSVDataset(TEST_SETS["smsa"], tokenizer)
-        smsa_ldr   = DataLoader(smsa_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
-        _, qat_preds_smsa, _ = collect_predictions(clean_model, smsa_ldr, DEVICE)
-        qat_label_strs = [ID2LABEL[p] for p in qat_preds_smsa]
+    if fp32_preds is not None and smsa_pred_labels_int is not None:
+        qat_label_strs = [ID2LABEL[p] for p in smsa_pred_labels_int]
         n_agree        = sum(a == b for a, b in zip(fp32_preds, qat_label_strs))
         agreement_rate = n_agree / max(1, len(fp32_preds))
         print(f"\n  [agreement] FP32 vs QAT-FP32 on SmSA: {agreement_rate*100:.2f}%")
@@ -485,8 +486,12 @@ def print_aggregated_summary(seed_results: list[dict]) -> None:
             agr      = qat_m.get("smsa_agreement_with_fp32")
             agr_str  = f"{agr*100:.2f}%" if agr is not None else "n/a"
             flag = ""
-            if abs(delta) > 0.01:
-                flag = "  [WARN: >1pp delta — check LR]"
+            if delta > 0.01:
+                flag = "  [WARN: QAT >1pp HIGHER — lr too high, try lr=5e-6]"
+            elif delta < -0.01:
+                flag = "  [WARN: QAT >1pp LOWER — quantization noise too high, try lr=2e-5 or +1 epoch]"
+            elif abs(delta) > 0.005:
+                flag = "  [NOTE: >0.5pp delta — borderline, expected within +-0.5pp]"
             print(f"    seed={seed}  FP32={fp32_acc:.4f}  QAT={qat_acc:.4f}  "
                   f"delta={delta:+.4f}  agreement={agr_str}{flag}")
 
