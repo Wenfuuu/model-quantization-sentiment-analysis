@@ -14,7 +14,7 @@ os.environ["HF_HOME"] = str(hf_cache_dir)
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment
+from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment, run_multiseed_ptq
 from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment, run_xai_diagnostics
 from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu, run_multiseed_qat
 from scripts.run_stress_test import interactive_menu as stress_menu, run_stress_test_experiment
@@ -30,6 +30,11 @@ from src.utils import print_section
 
 def run_ptq():
     selected, num_runs_override = ptq_menu()
+
+    if selected == "multiseed":
+        run_multiseed_ptq()
+        print_section("MULTI-SEED PTQ COMPLETED")
+        return
 
     print("\n" + "=" * 80)
     print(f"STARTING PTQ EXPERIMENTS - {len(selected)} VERSION(S) TO RUN")

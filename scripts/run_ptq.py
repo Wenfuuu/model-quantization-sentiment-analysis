@@ -4,12 +4,15 @@ import json
 import warnings
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import EXPERIMENT_CONFIGS, LABELS
+from src.config import EXPERIMENT_CONFIGS, LABELS, BASE_DIR, TRAINING_SEEDS
 from src.data import load_smsa_dataset, load_tweets_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
+from src.quantization.ptq.multiseed import ptq_single_seed
 from src.evaluation import ModelEvaluator, get_model_param_memory_mb
 from src.visualization import QuantizationPlotter, generate_comparison_report, generate_prediction_comparison
 from src.quantization.utils import save_quantized_model, get_model_size
@@ -18,6 +21,9 @@ from src.models.base import BaseModel
 from src.evaluation.metrics import statistical_test, confidence_comparison
 from src.config import DEVICE
 from src.utils import set_seed
+
+_DATA_DIR   = BASE_DIR / "data" / "processed"
+_MODELS_DIR = BASE_DIR / "models"
 
 warnings.filterwarnings('ignore')
 
@@ -274,10 +280,156 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     }
 
 
+def run_multiseed_ptq(seeds: list = None, *, num_runs: int = 20, warmup: int = 5) -> None:
+    """Run PTQ (FP16/INT8/INT4) from FP32 checkpoints for multiple seeds
+    and print an aggregated comparison table."""
+
+    if seeds is None:
+        seeds = list(TRAINING_SEEDS)
+
+    test_csv = _DATA_DIR / "smsa_test_v2.csv"
+    if not test_csv.exists():
+        raise FileNotFoundError(
+            f"Preprocessed test set not found: {test_csv}\n"
+            "Run scripts/prepare_datasets.py first."
+        )
+
+    if len(seeds) < 3:
+        warnings.warn(
+            f"Only {len(seeds)} seed(s). Publication-grade variance estimation "
+            "requires at least 3 seeds.", UserWarning, stacklevel=2,
+        )
+
+    print("\n" + "=" * 70)
+    print("  MULTI-SEED PTQ: FP32 → FP16 / INT8 / INT4")
+    print(f"  Seeds: {seeds}")
+    print(f"  Latency benchmark on seed {seeds[0]} only "
+          f"({num_runs} runs, {warmup} warmup)")
+    print("=" * 70 + "\n")
+
+    all_results = []
+    for i, seed in enumerate(seeds, 1):
+        print(f"\n{'#' * 70}")
+        print(f"#  SEED {i}/{len(seeds)}: {seed}")
+        print(f"{'#' * 70}")
+
+        fp32_ckpt = _MODELS_DIR / f"fp32_seed{seed}"
+        result = ptq_single_seed(
+            seed,
+            fp32_ckpt=fp32_ckpt,
+            test_csv=test_csv,
+            models_dir=_MODELS_DIR,
+            measure_latency=(seed == seeds[0]),
+            num_runs=num_runs,
+            warmup=warmup,
+        )
+        all_results.append(result)
+
+    # ---- Aggregated table ----
+    variants = ["fp32", "fp16", "int8", "int4"]
+
+    print("\n" + "=" * 70)
+    print("  MULTI-SEED PTQ — AGGREGATED RESULTS")
+    print("=" * 70)
+
+    # Model size from first seed (same across seeds)
+    size_row = {}
+    for v in variants:
+        if v in all_results[0] and "model_size_mb" in all_results[0][v]:
+            size_row[v] = all_results[0][v]["model_size_mb"]
+
+    # Per-variant aggregation
+    print(f"\n  {'Variant':<8} {'Size(MB)':>10} {'Accuracy (mean±std)':>22} "
+          f"{'Macro-F1 (mean±std)':>22} {'Agreement':>12}")
+    print("  " + "-" * 78)
+
+    for v in variants:
+        accs = [r[v]["metrics"]["accuracy"] for r in all_results if v in r]
+        mf1s = [r[v]["metrics"]["macro_f1"] for r in all_results if v in r]
+
+        size_str = f"{size_row.get(v, 0):.2f}" if v in size_row else "n/a"
+        acc_str = f"{np.mean(accs):.4f} ± {np.std(accs, ddof=1):.4f}"
+        mf1_str = f"{np.mean(mf1s):.4f} ± {np.std(mf1s, ddof=1):.4f}"
+
+        if v == "fp32":
+            agr_str = "—"
+        else:
+            agrs = [r[v]["agreement_with_fp32"] for r in all_results if v in r]
+            agr_str = f"{np.mean(agrs) * 100:.2f}%"
+
+        print(f"  {v.upper():<8} {size_str:>10} {acc_str:>22} {mf1_str:>22} {agr_str:>12}")
+
+    # Per-seed breakdown
+    print(f"\n  Per-seed accuracy:")
+    print(f"  {'Seed':>6}", end="")
+    for v in variants:
+        print(f"  {v.upper():>10}", end="")
+    print()
+    print("  " + "-" * (6 + 12 * len(variants)))
+
+    for r in all_results:
+        print(f"  {r['seed']:>6d}", end="")
+        for v in variants:
+            acc = r[v]["metrics"]["accuracy"] if v in r else 0
+            print(f"  {acc:>10.4f}", end="")
+        print()
+
+    # Latency from first seed
+    first = all_results[0]
+    has_latency = any("latency" in first.get(v, {}) for v in variants)
+    if has_latency:
+        print(f"\n  Latency (seed {first['seed']}, per-sample):")
+        print(f"  {'Variant':<8} {'Mean(ms)':>10} {'Median(ms)':>12} {'Std(ms)':>10}")
+        print("  " + "-" * 44)
+        for v in variants:
+            lat = first.get(v, {}).get("latency")
+            if lat:
+                print(f"  {v.upper():<8} {lat['mean_ms']:>10.2f} "
+                      f"{lat['median_ms']:>12.2f} {lat['std_ms']:>10.2f}")
+
+    print("\n" + "=" * 70)
+    print("  Multi-seed PTQ complete.")
+    print("=" * 70 + "\n")
+
+    # ---- Save aggregated JSON ----
+    agg_dir = BASE_DIR / "outputs" / "multi-seed"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    agg_path = agg_dir / "aggregated_ptq_results.json"
+
+    agg = {"seeds": seeds, "n_seeds": len(seeds)}
+    for v in variants:
+        accs = [r[v]["metrics"]["accuracy"] for r in all_results if v in r]
+        mf1s = [r[v]["metrics"]["macro_f1"] for r in all_results if v in r]
+        agg[v] = {
+            "accuracy_mean": float(np.mean(accs)),
+            "accuracy_std": float(np.std(accs, ddof=1)),
+            "macro_f1_mean": float(np.mean(mf1s)),
+            "macro_f1_std": float(np.std(mf1s, ddof=1)),
+            "model_size_mb": size_row.get(v),
+        }
+        if v != "fp32":
+            agrs = [r[v]["agreement_with_fp32"] for r in all_results if v in r]
+            agg[v]["agreement_mean"] = float(np.mean(agrs))
+    agg["per_seed"] = all_results
+
+    with open(agg_path, "w", encoding="utf-8") as f:
+        json.dump(agg, f, indent=2, ensure_ascii=False, default=str)
+    print(f"  Aggregated results saved -> {agg_path}")
+
+
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  PTQ QUANTIZATION EXPERIMENT RUNNER")
     print("=" * 60)
+
+    print("\n  Select Pipeline:")
+    print("  [1] Original PTQ (single model experiment)")
+    print("  [2] Multi-Seed PTQ (FP32 seeds → FP16/INT8/INT4)")
+
+    pipeline_choice = input("\n  Enter choice (1/2): ").strip()
+
+    if pipeline_choice == "2":
+        return "multiseed", None
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
@@ -305,6 +457,11 @@ def interactive_menu():
 
 
 if __name__ == "__main__":
+    # Check for --multiseed-ptq flag first
+    if "--multiseed-ptq" in sys.argv:
+        run_multiseed_ptq()
+        sys.exit(0)
+
     num_runs_override = None
     if len(sys.argv) > 1:
         if sys.argv[1] == "--all":
@@ -318,6 +475,10 @@ if __name__ == "__main__":
                     sys.exit(1)
     else:
         selected, num_runs_override = interactive_menu()
+
+        if selected == "multiseed":
+            run_multiseed_ptq()
+            sys.exit(0)
 
     print("\n" + "=" * 80)
     print(f"STARTING PTQ EXPERIMENTS - {len(selected)} VERSION(S) TO RUN")
