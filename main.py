@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment, run_multiseed_ptq
 from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment, run_xai_diagnostics
-from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu, run_multiseed_qat
+from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu, run_multiseed_qat, run_multiseed_qat_onnx
 from scripts.run_stress_test import interactive_menu as stress_menu, run_stress_test_experiment
 from scripts.finetune_multi_seed import (
     main as finetune_main,
@@ -65,6 +65,11 @@ def run_qat():
     if methods == "multiseed":
         run_multiseed_qat()
         print_section("MULTI-SEED QAT COMPLETED")
+        return
+
+    if methods == "multiseed_onnx":
+        run_multiseed_qat_onnx()
+        print_section("MULTI-SEED QAT-ONNX COMPLETED")
         return
 
     total = len(methods) * len(quant_types)

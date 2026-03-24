@@ -12,6 +12,7 @@ from src.config import BASE_DIR, DATASET_PATHS, TRAINING_SEEDS
 from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
 from src.quantization.qat.trainer import train_qat_seed
+from src.quantization.qat.eager import qat_onnx_single_seed
 from src.visualization import QuantizationPlotter
 from scripts.run_xai import generate_qat_divergences
 
@@ -192,6 +193,194 @@ def run_multiseed_qat(
     print(f"  Aggregated results saved -> {agg_path}")
 
 
+# =========================================================================
+# Multi-seed QAT → ONNX export + quantisation + evaluation
+# =========================================================================
+
+def run_multiseed_qat_onnx(seeds: list = None) -> None:
+    """Export clean QAT checkpoints to ONNX, quantise (INT8/FP16/INT4),
+    evaluate with ORT, and generate the combined summary CSV."""
+
+    if seeds is None:
+        seeds = list(TRAINING_SEEDS)
+
+    test_csv = _DATA_DIR / "smsa_test_v2.csv"
+    if not test_csv.exists():
+        raise FileNotFoundError(
+            f"Preprocessed test set not found: {test_csv}\n"
+            "Run scripts/prepare_datasets.py first."
+        )
+
+    print("\n" + "=" * 70)
+    print("  MULTI-SEED QAT → ONNX EXPORT + QUANTIZATION")
+    print(f"  Seeds: {seeds}")
+    print("=" * 70 + "\n")
+
+    all_results = []
+    for i, seed in enumerate(seeds, 1):
+        print(f"\n{'#' * 70}")
+        print(f"#  SEED {i}/{len(seeds)}: {seed}")
+        print(f"{'#' * 70}")
+
+        qat_clean = _MODELS_DIR / f"qat_seed{seed}_clean"
+        fp32_ckpt = _MODELS_DIR / f"fp32_seed{seed}"
+        result = qat_onnx_single_seed(
+            seed,
+            qat_clean_dir=qat_clean,
+            fp32_ckpt=fp32_ckpt,
+            test_csv=test_csv,
+            models_dir=_MODELS_DIR,
+        )
+        all_results.append(result)
+
+    # ---- Aggregated table ----
+    onnx_variants = ["int8", "fp16", "int4"]
+
+    print("\n" + "=" * 70)
+    print("  QAT-ONNX — AGGREGATED RESULTS")
+    print("=" * 70)
+
+    print(f"\n  {'Variant':<12} {'Acc (mean±std)':>22} "
+          f"{'Macro-F1 (mean±std)':>22} {'Agreement':>12}")
+    print("  " + "-" * 72)
+
+    for v in onnx_variants:
+        accs = [r[v]["metrics"]["accuracy"] for r in all_results if v in r]
+        mf1s = [r[v]["metrics"]["macro_f1"] for r in all_results if v in r]
+        agrs = [r[v]["agreement_with_fp32"] for r in all_results
+                if v in r and r[v]["agreement_with_fp32"] is not None]
+
+        acc_str = f"{np.mean(accs):.4f} ± {np.std(accs, ddof=1):.4f}"
+        mf1_str = f"{np.mean(mf1s):.4f} ± {np.std(mf1s, ddof=1):.4f}"
+        agr_str = f"{np.mean(agrs) * 100:.2f}%" if agrs else "n/a"
+
+        print(f"  QAT-{v.upper():<7} {acc_str:>22} {mf1_str:>22} {agr_str:>12}")
+
+    print("\n" + "=" * 70)
+    print("  QAT-ONNX export complete.")
+    print("=" * 70 + "\n")
+
+    # ---- Generate combined 8-variant CSV ----
+    _generate_combined_csv(seeds)
+
+
+def _generate_combined_csv(seeds: list) -> None:
+    """Build results/classification_summary_multiseed.csv with ALL 8 variants
+    across all seeds.  Agreement is always vs the original FP32 checkpoint."""
+
+    import pandas as pd
+
+    rows = []
+
+    for seed in seeds:
+        # Load FP32 predictions for agreement reference
+        fp32_pred_path = _MODELS_DIR / f"fp32_seed{seed}" / "predictions.csv"
+        fp32_pred = None
+        if fp32_pred_path.exists():
+            fp32_pred = pd.read_csv(fp32_pred_path)["pred_label"].astype(int).tolist()
+
+        # ---- 1. FP32 baseline ----
+        fp32_metrics = _MODELS_DIR / f"fp32_seed{seed}" / "metrics.json"
+        if fp32_metrics.exists():
+            m = json.loads(fp32_metrics.read_text())
+            rows.append({
+                "variant": "FP32",
+                "seed": seed,
+                "smsa_acc": m.get("accuracy"),
+                "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
+                "agreement_rate": 1.0,
+            })
+
+        # ---- 2-4. PTQ variants ----
+        for ptq_v in ["fp16", "int8", "int4"]:
+            d = _MODELS_DIR / f"ptq_{ptq_v}_seed{seed}"
+            mp = d / "metrics.json"
+            pp = d / "predictions.csv"
+            if mp.exists():
+                m = json.loads(mp.read_text())
+                agr = _agreement(fp32_pred, pp)
+                rows.append({
+                    "variant": f"PTQ-{ptq_v.upper()}",
+                    "seed": seed,
+                    "smsa_acc": m.get("accuracy"),
+                    "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
+                    "agreement_rate": agr,
+                })
+
+        # ---- 5. QAT-FP32 (clean model, PyTorch eval) ----
+        qat_clean = _MODELS_DIR / f"qat_seed{seed}_clean"
+        mp = qat_clean / "metrics.json"
+        pp = qat_clean / "predictions.csv"
+        if mp.exists():
+            m = json.loads(mp.read_text())
+            agr = _agreement(fp32_pred, pp)
+            rows.append({
+                "variant": "QAT-FP32",
+                "seed": seed,
+                "smsa_acc": m.get("accuracy"),
+                "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
+                "agreement_rate": agr,
+            })
+
+        # ---- 6-8. QAT-ONNX variants ----
+        for ov in ["fp16", "int8", "int4"]:
+            d = _MODELS_DIR / f"qat_onnx_{ov}_seed{seed}"
+            mp = d / "metrics.json"
+            pp = d / "predictions.csv"
+            if mp.exists():
+                m = json.loads(mp.read_text())
+                agr = _agreement(fp32_pred, pp)
+                rows.append({
+                    "variant": f"QAT-ONNX-{ov.upper()}",
+                    "seed": seed,
+                    "smsa_acc": m.get("accuracy"),
+                    "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
+                    "agreement_rate": agr,
+                })
+
+    if not rows:
+        print("  [warn] No results found for combined CSV.")
+        return
+
+    df = pd.DataFrame(rows)
+
+    # ---- Print combined table ----
+    print("\n" + "=" * 70)
+    print("  COMBINED 8-VARIANT SUMMARY (mean ± std across seeds)")
+    print("=" * 70)
+
+    print(f"\n  {'Variant':<16} {'Accuracy':>22} {'Macro-F1':>22} {'Agreement':>12}")
+    print("  " + "-" * 76)
+
+    for variant in df["variant"].unique():
+        vdf = df[df["variant"] == variant]
+        acc_m, acc_s = vdf["smsa_acc"].mean(), vdf["smsa_acc"].std(ddof=1)
+        f1_m, f1_s = vdf["smsa_f1"].mean(), vdf["smsa_f1"].std(ddof=1)
+        agr_vals = vdf["agreement_rate"].dropna()
+        agr_str = (f"{agr_vals.mean() * 100:.2f}%" if len(agr_vals) > 0
+                   else "n/a")
+
+        print(f"  {variant:<16} {acc_m:.4f} ± {acc_s:.4f}    "
+              f"{f1_m:.4f} ± {f1_s:.4f}    {agr_str:>12}")
+
+    # ---- Save CSV ----
+    out_dir = BASE_DIR / "results"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "classification_summary_multiseed.csv"
+    df.to_csv(csv_path, index=False, encoding="utf-8")
+    print(f"\n  Combined CSV saved -> {csv_path}")
+
+
+def _agreement(fp32_pred: list | None, pred_csv: Path) -> float | None:
+    """Compute prediction agreement between FP32 and a variant."""
+    if fp32_pred is None or not pred_csv.exists():
+        return None
+    import pandas as pd
+    other = pd.read_csv(pred_csv)["pred_label"].astype(int).tolist()
+    n = min(len(fp32_pred), len(other))
+    return sum(a == b for a, b in zip(fp32_pred[:n], other[:n])) / max(1, n)
+
+
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  QAT (QUANTIZATION-AWARE TRAINING) EXPERIMENT RUNNER")
@@ -200,11 +389,14 @@ def interactive_menu():
     print("\n  Select Pipeline:")
     print("  [1] ONNX QAT (Eager — original pipeline)")
     print("  [2] Multi-Seed QAT (FP32 → QAT-FP32, seeds 42/123/456)")
+    print("  [3] Multi-Seed QAT-ONNX (QAT → ONNX export + INT8/FP16/INT4)")
 
-    pipeline_choice = input("\n  Enter choice (1/2): ").strip()
+    pipeline_choice = input("\n  Enter choice (1/2/3): ").strip()
 
     if pipeline_choice == "2":
         return "multiseed", None, None, None, None, None
+    if pipeline_choice == "3":
+        return "multiseed_onnx", None, None, None, None, None
 
     methods = ["eager"]
 
@@ -408,10 +600,20 @@ def main():
         default=1e-5,
         help="QAT learning rate (multi-seed mode only)",
     )
+    parser.add_argument(
+        "--multiseed-qat-onnx",
+        action="store_true",
+        default=False,
+        help="Export clean QAT checkpoints to ONNX, quantise, and evaluate",
+    )
     args = parser.parse_args()
 
     if args.multiseed_qat:
         run_multiseed_qat(epochs=args.qat_epochs, lr=args.qat_lr)
+        return
+
+    if args.multiseed_qat_onnx:
+        run_multiseed_qat_onnx()
         return
 
     methods = ["eager"]

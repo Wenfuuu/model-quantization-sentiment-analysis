@@ -3,11 +3,14 @@ import os
 import re
 import time
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.quantization as quantization
+from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
@@ -17,10 +20,14 @@ from transformers import (
 from datasets import Dataset, DatasetDict, disable_caching
 from sklearn.metrics import (
     accuracy_score,
+    f1_score,
     precision_recall_fscore_support,
     classification_report,
     confusion_matrix,
 )
+
+_LABEL_NAMES = ["POSITIVE", "NEUTRAL", "NEGATIVE"]
+_NUM_LABELS = 3
 
 import matplotlib
 matplotlib.use("Agg")
@@ -762,3 +769,316 @@ class EagerQATTrainer:
         print(f"FP32 results saved to: {fp32_results_path}")
 
         return results_data
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers for multi-seed QAT-ONNX pipeline
+# ---------------------------------------------------------------------------
+
+def export_model_to_onnx(
+    model_dir: Path,
+    onnx_path: Path,
+    *,
+    max_length: int = 128,
+) -> Path:
+    """Export a HuggingFace checkpoint directory to ONNX (opset 14)."""
+    warnings.filterwarnings("ignore")
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_dir, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
+    )
+    model.eval().cpu()
+
+    dummy = tokenizer(
+        "Contoh teks untuk eksport",
+        padding="max_length",
+        max_length=max_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+
+    onnx_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            (dummy["input_ids"], dummy["attention_mask"]),
+            str(onnx_path),
+            input_names=["input_ids", "attention_mask"],
+            output_names=["logits"],
+            dynamic_axes={
+                "input_ids":      {0: "batch_size", 1: "sequence"},
+                "attention_mask": {0: "batch_size", 1: "sequence"},
+                "logits":         {0: "batch_size"},
+            },
+            opset_version=14,
+            do_constant_folding=True,
+            verbose=False,
+        )
+
+    size_mb = os.path.getsize(str(onnx_path)) / (1024 * 1024)
+    print(f"  ONNX exported: {onnx_path} ({size_mb:.2f} MB)")
+    return onnx_path
+
+
+def _print_size_reduction(label: str, fp32_path: Path, quant_path: Path) -> None:
+    fp32_mb = os.path.getsize(str(fp32_path)) / (1024 * 1024)
+    q_mb = os.path.getsize(str(quant_path)) / (1024 * 1024)
+    red = (1 - q_mb / fp32_mb) * 100
+    print(f"  {label}: {q_mb:.2f} MB  (reduction {red:.1f}%)")
+
+
+def _create_onnx_session(onnx_path: Path, *, is_fp16: bool = False):
+    """Create an ORT InferenceSession on CPU."""
+    import onnxruntime as ort
+
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+    opts.graph_optimization_level = (
+        ort.GraphOptimizationLevel.ORT_ENABLE_BASIC if is_fp16
+        else ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    )
+    return ort.InferenceSession(
+        str(onnx_path), opts, providers=["CPUExecutionProvider"],
+    )
+
+
+def quantize_onnx_int8(fp32_onnx: Path) -> Path:
+    """Dynamic INT8 quantization via onnxruntime."""
+    from onnxruntime.quantization import quantize_dynamic, QuantType
+
+    out = fp32_onnx.with_name(fp32_onnx.stem + "_int8.onnx")
+    quantize_dynamic(
+        model_input=str(fp32_onnx),
+        model_output=str(out),
+        weight_type=QuantType.QInt8,
+    )
+    _print_size_reduction("INT8", fp32_onnx, out)
+    return out
+
+
+def quantize_onnx_fp16(fp32_onnx: Path) -> Path:
+    """Convert ONNX model weights and graph to FP16."""
+    import onnx
+    from onnx import numpy_helper, TensorProto
+    from onnxconverter_common import float16
+
+    out = fp32_onnx.with_name(fp32_onnx.stem + "_fp16.onnx")
+
+    onnx_model = onnx.load(str(fp32_onnx))
+    model_fp16 = float16.convert_float_to_float16(onnx_model, keep_io_types=False)
+
+    for init in model_fp16.graph.initializer:
+        if init.data_type == TensorProto.FLOAT:
+            data = numpy_helper.to_array(init).astype(np.float16)
+            init.CopyFrom(numpy_helper.from_array(data, init.name))
+
+    for node in model_fp16.graph.node:
+        for attr in node.attribute:
+            if (attr.type == onnx.AttributeProto.TENSOR
+                    and attr.t.data_type == TensorProto.FLOAT):
+                data = numpy_helper.to_array(attr.t).astype(np.float16)
+                attr.t.CopyFrom(numpy_helper.from_array(data))
+        if node.op_type == "Cast":
+            for attr in node.attribute:
+                if attr.name == "to" and attr.i == TensorProto.FLOAT:
+                    attr.i = TensorProto.FLOAT16
+
+    for gi in model_fp16.graph.input:
+        if gi.type.tensor_type.elem_type == TensorProto.FLOAT:
+            gi.type.tensor_type.elem_type = TensorProto.FLOAT16
+    for go in model_fp16.graph.output:
+        if go.type.tensor_type.elem_type == TensorProto.FLOAT:
+            go.type.tensor_type.elem_type = TensorProto.FLOAT16
+
+    while len(model_fp16.graph.value_info) > 0:
+        model_fp16.graph.value_info.pop()
+
+    onnx.save(model_fp16, str(out))
+    _print_size_reduction("FP16", fp32_onnx, out)
+    return out
+
+
+def quantize_onnx_int4(fp32_onnx: Path) -> Path:
+    """INT4 weight-only quantization via MatMulNBitsQuantizer."""
+    import onnx
+
+    out = fp32_onnx.with_name(fp32_onnx.stem + "_int4.onnx")
+
+    try:
+        from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
+
+        model = onnx.load(str(fp32_onnx))
+        quant = MatMulNBitsQuantizer(model, block_size=128, is_symmetric=True, bits=4)
+        quant.process()
+        onnx.save(quant.model.model, str(out))
+    except (ModuleNotFoundError, ImportError):
+        from onnxruntime.quantization import matmul_4bits_quantizer, quant_utils
+
+        cfg = matmul_4bits_quantizer.DefaultWeightOnlyQuantConfig(
+            block_size=128, is_symmetric=True, accuracy_level=4,
+        )
+        qm = quant_utils.load_model_with_shape_infer(fp32_onnx)
+        quant = matmul_4bits_quantizer.MatMul4BitsQuantizer(
+            qm, nodes_to_exclude=None, nodes_to_include=None, algo_config=cfg,
+        )
+        quant.process()
+        quant.model.save_model_to_file(str(out), True)
+
+    _print_size_reduction("INT4", fp32_onnx, out)
+    return out
+
+
+def evaluate_onnx_on_csv(
+    onnx_path: Path,
+    tokenizer,
+    test_csv: Path,
+    *,
+    max_length: int = 128,
+    is_fp16: bool = False,
+) -> tuple:
+    """Run ONNX inference over a preprocessed CSV and return metrics."""
+    session = _create_onnx_session(onnx_path, is_fp16=is_fp16)
+
+    df = pd.read_csv(test_csv)
+    df = df.dropna(subset=["text", "label"])
+    texts = df["text"].astype(str).tolist()
+    true_labels = df["label"].astype(int).tolist()
+
+    pred_labels = []
+    all_probs = []
+
+    for text in tqdm(texts, desc="  onnx eval", leave=False):
+        enc = tokenizer(
+            text, truncation=True, padding="max_length",
+            max_length=max_length, return_tensors="np",
+        )
+        feed = {
+            "input_ids": enc["input_ids"].astype(np.int64),
+            "attention_mask": enc["attention_mask"].astype(np.int64),
+        }
+        logits = session.run(None, feed)[0]
+
+        logits_f = logits.astype(np.float64)
+        shifted = logits_f - logits_f.max(axis=1, keepdims=True)
+        exp = np.exp(shifted)
+        probs = exp / exp.sum(axis=1, keepdims=True)
+
+        pred_labels.append(int(np.argmax(logits, axis=1)[0]))
+        all_probs.append(probs[0].astype(np.float64))
+
+    probs_arr = np.array(all_probs)
+
+    cls_report = classification_report(
+        true_labels, pred_labels, target_names=_LABEL_NAMES,
+        output_dict=True, zero_division=0,
+    )
+    metrics = {
+        "accuracy": accuracy_score(true_labels, pred_labels),
+        "macro_f1": f1_score(true_labels, pred_labels, average="macro", zero_division=0),
+        "weighted_precision": cls_report["weighted avg"]["precision"],
+        "weighted_recall": cls_report["weighted avg"]["recall"],
+        "weighted_f1": cls_report["weighted avg"]["f1-score"],
+        "per_class_f1": {lbl: cls_report[lbl]["f1-score"] for lbl in _LABEL_NAMES},
+    }
+
+    del session
+    return true_labels, pred_labels, probs_arr, metrics
+
+
+def qat_onnx_single_seed(
+    seed: int,
+    *,
+    qat_clean_dir: Path,
+    fp32_ckpt: Path,
+    test_csv: Path,
+    models_dir: Path,
+    max_length: int = 128,
+) -> dict:
+    """Full QAT-ONNX pipeline for one seed: export → quantize → evaluate."""
+    print(f"\n{'=' * 70}")
+    print(f"#  QAT-ONNX  SEED {seed}")
+    print(f"{'=' * 70}\n")
+
+    if not qat_clean_dir.exists():
+        raise FileNotFoundError(
+            f"Clean QAT checkpoint not found: {qat_clean_dir}\n"
+            "Run multi-seed QAT first."
+        )
+
+    tokenizer = AutoTokenizer.from_pretrained(qat_clean_dir)
+
+    base_dir = models_dir / f"qat_onnx_seed{seed}"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    fp32_onnx = export_model_to_onnx(
+        qat_clean_dir, base_dir / "model_qat.onnx", max_length=max_length,
+    )
+
+    fp32_pred = None
+    fp32_pred_path = fp32_ckpt / "predictions.csv"
+    if fp32_pred_path.exists():
+        fp32_pred = pd.read_csv(fp32_pred_path)["pred_label"].astype(int).tolist()
+    else:
+        print(f"  [warn] FP32 predictions not found at {fp32_pred_path}")
+
+    quant_fns = {
+        "int8": (quantize_onnx_int8, False),
+        "fp16": (quantize_onnx_fp16, True),
+        "int4": (quantize_onnx_int4, False),
+    }
+
+    seed_results = {"seed": seed, "source_qat_checkpoint": str(qat_clean_dir)}
+
+    for vname, (quant_fn, is_fp16) in quant_fns.items():
+        print(f"\n  [{vname.upper()}] Quantizing ONNX ...")
+        q_onnx = quant_fn(fp32_onnx)
+
+        save_dir = models_dir / f"qat_onnx_{vname}_seed{seed}"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        import shutil
+        dest_onnx = save_dir / q_onnx.name
+        if dest_onnx != q_onnx:
+            shutil.copy2(str(q_onnx), str(dest_onnx))
+
+        print(f"  [{vname.upper()}] Evaluating with ONNX Runtime ...")
+        true_labels, pred_labels, probs, metrics = evaluate_onnx_on_csv(
+            dest_onnx, tokenizer, test_csv, max_length=max_length, is_fp16=is_fp16,
+        )
+        print(f"  {vname.upper()} accuracy={metrics['accuracy']:.4f}  "
+              f"macro-F1={metrics['macro_f1']:.4f}")
+
+        agreement = None
+        if fp32_pred is not None:
+            n_agree = sum(a == b for a, b in zip(fp32_pred, pred_labels))
+            agreement = n_agree / max(1, len(fp32_pred))
+            print(f"  vs FP32 agreement: {agreement * 100:.2f}%")
+
+        texts = pd.read_csv(test_csv)["text"].astype(str).tolist()
+        pd.DataFrame({
+            "sample_id": range(len(pred_labels)),
+            "text": texts[:len(pred_labels)],
+            "true_label": true_labels,
+            "pred_label": pred_labels,
+            "prob_pos": probs[:, 0],
+            "prob_neu": probs[:, 1],
+            "prob_neg": probs[:, 2],
+        }).to_csv(save_dir / "predictions.csv", index=False, encoding="utf-8")
+
+        with open(save_dir / "metrics.json", "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2)
+
+        model_size_mb = os.path.getsize(str(dest_onnx)) / (1024 * 1024)
+        seed_results[vname] = {
+            "metrics": metrics,
+            "agreement_with_fp32": agreement,
+            "model_size_mb": model_size_mb,
+            "onnx_path": str(dest_onnx),
+        }
+
+    out_path = models_dir / f"qat_onnx_seed{seed}_results.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(seed_results, f, indent=2, ensure_ascii=False, default=str)
+    print(f"\n  Results saved -> {out_path}")
+
+    return seed_results

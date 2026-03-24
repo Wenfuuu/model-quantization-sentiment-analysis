@@ -9,6 +9,15 @@ def __getattr__(name: str):
     if name == "FakeQATTrainer":
         from .fake import FakeQATTrainer
         return FakeQATTrainer
+    _onnx_exports = {
+        "qat_onnx_single_seed", "export_model_to_onnx",
+        "quantize_onnx_int8", "quantize_onnx_fp16", "quantize_onnx_int4",
+        "evaluate_onnx_on_csv",
+    }
+    if name in _onnx_exports:
+        import importlib
+        mod = importlib.import_module(".eager", package=__name__)
+        return getattr(mod, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -38,4 +47,10 @@ __all__ = [
     "apply_qat_config",
     "strip_observers",
     "SentimentCSVDataset",
+    "qat_onnx_single_seed",
+    "export_model_to_onnx",
+    "quantize_onnx_int8",
+    "quantize_onnx_fp16",
+    "quantize_onnx_int4",
+    "evaluate_onnx_on_csv",
 ]
