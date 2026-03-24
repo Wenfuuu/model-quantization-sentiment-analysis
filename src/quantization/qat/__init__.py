@@ -1,4 +1,4 @@
-from .trainer import QATTrainer
+from .trainer import QATTrainer, train_qat_seed, apply_qat_config, strip_observers, SentimentCSVDataset
 from .config import QATConfig, FinetuneQATConfig
 
 
@@ -34,4 +34,8 @@ __all__ = [
     "EagerQATTrainer",
     "FakeQATTrainer",
     "load_qat_model_for_xai",
+    "train_qat_seed",
+    "apply_qat_config",
+    "strip_observers",
+    "SentimentCSVDataset",
 ]

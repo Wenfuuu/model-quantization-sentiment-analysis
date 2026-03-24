@@ -54,8 +54,6 @@ def preprocess_text(text: str) -> str:
 
 
 class SMSADataset(Dataset):
-    """Load preprocessed SmSA CSV (columns: text, label)."""
-
     def __init__(self, path: Path, tokenizer, max_length: int = MAX_LENGTH):
         df = pd.read_csv(path)
         df = df.dropna(subset=["text", "label"])
@@ -119,7 +117,6 @@ def run_epoch(model, loader, optimizer, scheduler, device, train: bool) -> tuple
 
 
 def evaluate_with_probs(model, loader, device):
-    """Evaluate and return predictions with per-class probabilities."""
     model.eval()
     all_preds, all_labels, all_probs = [], [], []
 
@@ -147,7 +144,6 @@ def train_single_seed(
     lr: float = 2e-5,
     batch_size: int = 16,
 ) -> dict:
-    """Train IndoBERT for one seed; return results dict."""
     set_seed(seed)
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -159,7 +155,6 @@ def train_single_seed(
     print(f"  Save to: {save_dir}")
     print("=" * 60)
 
-    # Always load fresh from HuggingFace
     print("\nLoading tokenizer and model ...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -214,7 +209,6 @@ def train_single_seed(
             model.save_pretrained(save_dir)
             print(f"  -> New best val macro-F1={best_f1:.4f} -- model saved")
 
-    # ---- Test evaluation ----
     print("\nLoading best checkpoint for test evaluation ...")
     best_model = AutoModelForSequenceClassification.from_pretrained(save_dir).to(DEVICE)
 
@@ -237,7 +231,6 @@ def train_single_seed(
         test_labels, test_preds, target_names=label_names, zero_division=0
     ))
 
-    # ---- Save predictions CSV ----
     pred_df = pd.DataFrame({
         "sample_id":  range(len(test_preds)),
         "text":       test_set.texts,
@@ -251,7 +244,6 @@ def train_single_seed(
     pred_df.to_csv(pred_path, index=False, encoding="utf-8")
     print(f"Predictions saved -> {pred_path}")
 
-    # ---- Save metrics JSON ----
     metrics = {
         "accuracy":           test_acc,
         "weighted_precision": cls_report_dict["weighted avg"]["precision"],
@@ -266,7 +258,6 @@ def train_single_seed(
         json.dump(metrics, f, indent=2)
     print(f"Metrics saved -> {metrics_path}")
 
-    # ---- Save full results (backward compat with aggregation utils) ----
     results = {
         "model_id": MODEL_ID,
         "save_dir": str(save_dir),
@@ -300,7 +291,6 @@ def train_single_seed(
 
 
 def main(args):
-    # Backward compat: --seed (single) for subprocess mode
     if args.seed is not None:
         seeds = [args.seed]
     else:
@@ -331,7 +321,6 @@ def main(args):
         )
         all_results.append(result)
 
-    # ---- Aggregated summary ----
     if len(all_results) > 1:
         accs = [r["test_accuracy"] for r in all_results]
         f1s  = [r["test_macro_f1"] for r in all_results]
@@ -360,7 +349,6 @@ def parse_args():
     p.add_argument("--save-dir",   type=str,   default=None,
                    help="Override save directory (single-seed mode only).")
     return p.parse_args()
-
 
 if __name__ == "__main__":
     main(parse_args())

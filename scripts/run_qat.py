@@ -1,15 +1,22 @@
 import sys
 import json
 import argparse
+import warnings
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import BASE_DIR, DATASET_PATHS
+from src.config import BASE_DIR, DATASET_PATHS, TRAINING_SEEDS
 from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
+from src.quantization.qat.trainer import train_qat_seed
 from src.visualization import QuantizationPlotter
 from scripts.run_xai import generate_qat_divergences
+
+_DATA_DIR   = BASE_DIR / "data" / "processed"
+_MODELS_DIR = BASE_DIR / "models"
 
 
 def get_default_config(method, quant_type, sample_frac=1.0):
@@ -27,7 +34,6 @@ def get_default_config(method, quant_type, sample_frac=1.0):
         results_dir=output_dir / results_name,
         sample_frac=sample_frac,
     )
-
 
 def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=False, num_runs=20):
     config = get_default_config("eager", quant_type, sample_frac=sample_frac)
@@ -62,12 +68,143 @@ def run_eager_qat(quant_type, dataset_path=None, sample_frac=1.0, evaluate_only=
     results = trainer.evaluate_onnx(onnx_path, dataset_path=dataset_path, num_runs=num_runs)
     return results
 
+def run_multiseed_qat(
+    seeds: list = None,
+    *,
+    epochs: int = 3,
+    lr: float = 1e-5,
+    batch_size: int = 16,
+) -> None:
+    if seeds is None:
+        seeds = list(TRAINING_SEEDS)
+
+    train_csv = _DATA_DIR / "smsa_train_v2.csv"
+    val_csv   = _DATA_DIR / "smsa_val_v2.csv"
+    test_csv  = _DATA_DIR / "smsa_test_v2.csv"
+
+    for p in (train_csv, val_csv, test_csv):
+        if not p.exists():
+            raise FileNotFoundError(
+                f"Preprocessed dataset not found: {p}\n"
+                "Run scripts/prepare_datasets.py first."
+            )
+
+    if len(seeds) < 3:
+        warnings.warn(
+            f"Only {len(seeds)} seed(s) requested. Publication-grade variance "
+            "estimation requires at least 3 independent training runs.",
+            UserWarning, stacklevel=2,
+        )
+
+    print("\n" + "=" * 70)
+    print("  MULTI-SEED QAT: FP32 → QAT-FP32 (fake quantisation)")
+    print(f"  Seeds: {seeds}  |  epochs={epochs}  lr={lr}  batch={batch_size}")
+    print("=" * 70 + "\n")
+
+    all_results = []
+    for i, seed in enumerate(seeds, 1):
+        print(f"\n{'#'*70}")
+        print(f"#  SEED {i}/{len(seeds)}: {seed}")
+        print(f"{'#'*70}")
+
+        fp32_ckpt = _MODELS_DIR / f"fp32_seed{seed}"
+        result = train_qat_seed(
+            seed,
+            fp32_ckpt=fp32_ckpt,
+            train_csv=train_csv,
+            val_csv=val_csv,
+            test_csv=test_csv,
+            models_dir=_MODELS_DIR,
+            epochs=epochs,
+            lr=lr,
+            batch_size=batch_size,
+        )
+        all_results.append(result)
+
+    print("\n" + "=" * 70)
+    print("  MULTI-SEED QAT — AGGREGATED RESULTS")
+    print("=" * 70)
+
+    accs  = [r["test_accuracy"]  for r in all_results]
+    mf1s  = [r["test_macro_f1"]  for r in all_results]
+    agrees = [r["smsa_agreement_with_fp32"] for r in all_results
+              if r["smsa_agreement_with_fp32"] is not None]
+
+    fp32_accs = {}
+    for r in all_results:
+        fp32_metrics = Path(r["source_fp32_checkpoint"]) / "metrics.json"
+        if fp32_metrics.exists():
+            with open(fp32_metrics) as f:
+                fp32_accs[r["seed"]] = json.load(f).get("accuracy")
+
+    print(f"\n  {'Seed':>6}  {'FP32 Acc':>10}  {'QAT Acc':>10}  {'Δ':>8}  {'Agreement':>10}")
+    print("  " + "-" * 56)
+
+    for r in all_results:
+        s = r["seed"]
+        qat_acc = r["test_accuracy"]
+        fp32_acc = fp32_accs.get(s)
+        agr = r["smsa_agreement_with_fp32"]
+
+        fp32_str  = f"{fp32_acc:.4f}" if fp32_acc is not None else "  n/a"
+        delta_str = f"{(qat_acc - fp32_acc):+.4f}" if fp32_acc is not None else "  n/a"
+        agr_str   = f"{agr*100:.2f}%" if agr is not None else "  n/a"
+
+        print(f"  {s:>6d}  {fp32_str:>10}  {qat_acc:>10.4f}  {delta_str:>8}  {agr_str:>10}")
+
+    print(f"\n  QAT accuracy:   {np.mean(accs):.4f} ± {np.std(accs, ddof=1):.4f}")
+    print(f"  QAT macro-F1:   {np.mean(mf1s):.4f} ± {np.std(mf1s, ddof=1):.4f}")
+    if agrees:
+        print(f"  Agreement rate: {np.mean(agrees)*100:.2f}% ± {np.std(agrees, ddof=1)*100:.2f}%")
+
+    print()
+    for r in all_results:
+        s = r["seed"]
+        qat_acc = r["test_accuracy"]
+        fp32_acc = fp32_accs.get(s)
+        agr = r["smsa_agreement_with_fp32"]
+
+        if fp32_acc is not None and (qat_acc - fp32_acc) > 0.01:
+            print(f"  [!] Seed {s}: QAT accuracy >1pp HIGHER than FP32 — lr may be too high")
+        if fp32_acc is not None and (fp32_acc - qat_acc) > 0.01:
+            print(f"  [!] Seed {s}: QAT accuracy >1pp LOWER than FP32 — quantization noise may be too large")
+        if agr is not None and agr < 0.97:
+            print(f"  [!] Seed {s}: Agreement {agr*100:.2f}% < 97% — check training stability")
+
+    print("\n" + "=" * 70)
+    print("  Multi-seed QAT complete.")
+    print("=" * 70 + "\n")
+
+    agg_dir = BASE_DIR / "outputs" / "multi-seed"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    agg_path = agg_dir / "aggregated_qat_results.json"
+    agg = {
+        "seeds": seeds,
+        "n_seeds": len(seeds),
+        "qat_accuracy_mean": float(np.mean(accs)),
+        "qat_accuracy_std":  float(np.std(accs, ddof=1)),
+        "qat_macro_f1_mean": float(np.mean(mf1s)),
+        "qat_macro_f1_std":  float(np.std(mf1s, ddof=1)),
+        "per_seed": all_results,
+    }
+    with open(agg_path, "w", encoding="utf-8") as f:
+        json.dump(agg, f, indent=2, ensure_ascii=False)
+    print(f"  Aggregated results saved -> {agg_path}")
 
 
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  QAT (QUANTIZATION-AWARE TRAINING) EXPERIMENT RUNNER")
     print("=" * 60)
+
+    print("\n  Select Pipeline:")
+    print("  [1] ONNX QAT (Eager — original pipeline)")
+    print("  [2] Multi-Seed QAT (FP32 → QAT-FP32, seeds 42/123/456)")
+
+    pipeline_choice = input("\n  Enter choice (1/2): ").strip()
+
+    if pipeline_choice == "2":
+        return "multiseed", None, None, None, None, None
 
     methods = ["eager"]
 
@@ -106,7 +243,6 @@ def interactive_menu():
 
     return methods, quant_types, dataset_path, sample_frac, evaluate_only, num_runs
 
-
 def _load_evaluation_json(method, quant_type):
     output_dir = BASE_DIR / "outputs"
     json_path = output_dir / f"indobert-qat-{quant_type}-smsa" / f"evaluation_results_{quant_type}_eager.json"
@@ -114,7 +250,6 @@ def _load_evaluation_json(method, quant_type):
         with open(json_path, 'r') as f:
             return json.load(f)
     return None
-
 
 def _generate_qat_comparison(method, quant_types):
     all_results = {}
@@ -186,7 +321,6 @@ def _generate_qat_comparison(method, quant_types):
     chart_path = plotter.create_qat_comparison_plot(all_results, method, model_sizes=model_sizes, memory_usages=memory_usages)
     print(f"\nQAT {method.upper()} comparison chart saved to: {chart_path}")
 
-
 def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0, evaluate_only=False, num_runs=20):
     total = len(methods) * len(quant_types)
     current = 0
@@ -212,7 +346,6 @@ def run_qat_from_menu(methods, quant_types, dataset_path=None, sample_frac=1.0, 
     print("\n" + "=" * 70)
     print("All QAT experiments completed!")
     print("=" * 70)
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -257,7 +390,29 @@ def main():
         default=20,
         help="Inference runs per sample for latency measurement (0 = skip latency)",
     )
+    parser.add_argument(
+        "--multiseed-qat",
+        action="store_true",
+        default=False,
+        help="Run multi-seed QAT from FP32 checkpoints (seeds 42/123/456)",
+    )
+    parser.add_argument(
+        "--qat-epochs",
+        type=int,
+        default=3,
+        help="Number of QAT training epochs (multi-seed mode only)",
+    )
+    parser.add_argument(
+        "--qat-lr",
+        type=float,
+        default=1e-5,
+        help="QAT learning rate (multi-seed mode only)",
+    )
     args = parser.parse_args()
+
+    if args.multiseed_qat:
+        run_multiseed_qat(epochs=args.qat_epochs, lr=args.qat_lr)
+        return
 
     methods = ["eager"]
     quant_types = ["int8", "int4"] if args.quant_type == "all" else [args.quant_type]
@@ -265,7 +420,6 @@ def main():
     dataset_path = str(DATASET_PATHS["smsa"])
 
     run_qat_from_menu(methods, quant_types, dataset_path=dataset_path, sample_frac=args.sample_frac, evaluate_only=args.evaluate_only, num_runs=args.num_runs)
-
 
 if __name__ == "__main__":
     main()
