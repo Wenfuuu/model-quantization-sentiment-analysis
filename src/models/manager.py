@@ -25,6 +25,11 @@ class ModelManager:
     def _resolve_tokenizer_source(model_id):
         model_dir = Path(model_id)
         if not model_dir.is_dir():
+            if model_dir.is_absolute():
+                raise FileNotFoundError(
+                    f"Local model directory not found: {model_dir}\n"
+                    "Run finetuning first, or check that the path in EXPERIMENT_CONFIGS is correct."
+                )
             return model_id
 
         tokenizer_files = [

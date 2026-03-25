@@ -34,7 +34,7 @@ EXPERIMENT_CONFIGS = {
         "warmup_runs": 5,
     },
     "finetuned_smsa": {
-        "model_id": str(BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"),
+        "model_id": str(BASE_DIR / "models" / "fp32_seed42"),
         "dataset": "smsa",
         "output_dir": BASE_DIR / "outputs" / "finetuned-smsa",
         "num_inference_runs": 20,
