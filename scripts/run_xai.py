@@ -32,6 +32,7 @@ from src.xai import (
     save_attention_comparisons,
     attribution_similarity,
     integrated_gradients_tokens,
+    gradient_times_input_tokens,
     InsertionDeletionEvaluator,
     layer_cls_similarity,
 )
@@ -677,7 +678,7 @@ def run_ste_ig_analysis():
     metadata_rows = []
     example_count = 0
 
-    print(f"\n  Running IG on {len(samples)} samples (n_steps=30, MEAN aggregation)...\n")
+    print(f"\n  Running IG + GxI on {len(samples)} samples (n_steps=30, MEAN aggregation)...\n")
 
     for idx, sample in enumerate(samples):
         sid = sample["sample_id"]
@@ -687,17 +688,34 @@ def run_ste_ig_analysis():
         alignment = build_alignment(text, tokenizer)
 
         res_fp32 = ig_fp32.explain(text, steps=30)
-        words_fp32, word_scores_fp32 = project_subword_to_word(
+        words_fp32, ig_word_scores_fp32 = project_subword_to_word(
             res_fp32["tokens"], res_fp32["scores"], alignment, strategy="mean"
         )
 
         res_qat = ig_qat.explain(text, steps=30)
-        words_qat, word_scores_qat = project_subword_to_word(
+        _, ig_word_scores_qat = project_subword_to_word(
             res_qat["tokens"], res_qat["scores"], alignment, strategy="mean"
         )
 
-        np.save(_OUT_DIR / f"ig_fp32_{sid}.npy", word_scores_fp32)
-        np.save(_OUT_DIR / f"ig_qat_ste_{sid}.npy", word_scores_qat)
+        np.save(_OUT_DIR / f"ig_fp32_{sid}.npy", ig_word_scores_fp32)
+        np.save(_OUT_DIR / f"ig_qat_ste_{sid}.npy", ig_word_scores_qat)
+
+        gxi_tokens_fp32, gxi_sw_fp32 = gradient_times_input_tokens(
+            fp32_model.model, tokenizer, text, target=res_fp32["predicted_class"]
+        )
+        _, gxi_word_scores_fp32 = project_subword_to_word(
+            gxi_tokens_fp32, gxi_sw_fp32, alignment, strategy="mean"
+        )
+
+        gxi_tokens_qat, gxi_sw_qat = gradient_times_input_tokens(
+            qat_model.model, tokenizer, text, target=res_qat["predicted_class"]
+        )
+        _, gxi_word_scores_qat = project_subword_to_word(
+            gxi_tokens_qat, gxi_sw_qat, alignment, strategy="mean"
+        )
+
+        np.save(_OUT_DIR / f"gxi_fp32_{sid}.npy", gxi_word_scores_fp32)
+        np.save(_OUT_DIR / f"gxi_qat_ste_{sid}.npy", gxi_word_scores_qat)
 
         metadata_rows.append({
             "sample_id": sid,
@@ -706,17 +724,21 @@ def run_ste_ig_analysis():
             "predicted_fp32": _INT2LABEL.get(res_fp32["predicted_class"], str(res_fp32["predicted_class"])),
             "predicted_qat_ste": _INT2LABEL.get(res_qat["predicted_class"], str(res_qat["predicted_class"])),
             "n_words": len(words_fp32),
-            "npy_fp32": f"ig_fp32_{sid}.npy",
-            "npy_qat_ste": f"ig_qat_ste_{sid}.npy",
+            "ig_npy_fp32": f"ig_fp32_{sid}.npy",
+            "ig_npy_qat_ste": f"ig_qat_ste_{sid}.npy",
+            "gxi_npy_fp32": f"gxi_fp32_{sid}.npy",
+            "gxi_npy_qat_ste": f"gxi_qat_ste_{sid}.npy",
         })
 
         if example_count < 3:
             example_count += 1
             print(f"  ── Example {example_count}: [{expected}] \"{text[:80]}\"")
-            top5_fp32 = sorted(zip(words_fp32, word_scores_fp32), key=lambda x: -abs(x[1]))[:5]
-            top5_qat = sorted(zip(words_qat, word_scores_qat), key=lambda x: -abs(x[1]))[:5]
-            print("    FP32  top-5: " + "  ".join(f"{w}({s:+.3f})" for w, s in top5_fp32))
-            print("    QAT   top-5: " + "  ".join(f"{w}({s:+.3f})" for w, s in top5_qat))
+            top5 = lambda ws, ss: sorted(zip(ws, ss), key=lambda x: -abs(x[1]))[:5]
+            fmt = lambda pairs: "  ".join(f"{w}({s:+.3f})" for w, s in pairs)
+            print(f"    IG  FP32  top-5: {fmt(top5(words_fp32, ig_word_scores_fp32))}")
+            print(f"    IG  QAT   top-5: {fmt(top5(words_fp32, ig_word_scores_qat))}")
+            print(f"    GxI FP32  top-5: {fmt(top5(words_fp32, gxi_word_scores_fp32))}")
+            print(f"    GxI QAT   top-5: {fmt(top5(words_fp32, gxi_word_scores_qat))}")
             print()
 
         if (idx + 1) % 10 == 0:
@@ -725,8 +747,8 @@ def run_ste_ig_analysis():
     meta_path = _OUT_DIR / "ig_metadata.csv"
     pd.DataFrame(metadata_rows).to_csv(meta_path, index=False, encoding="utf-8")
     print(f"\n  Saved metadata → {meta_path}")
-    print(f"  Saved {len(metadata_rows)} × 2 .npy files in {_OUT_DIR}")
-
+    print(f"  Saved {len(metadata_rows)} × 4 .npy files in {_OUT_DIR}")
+    print("  File pattern: ig_fp32_N.npy  ig_qat_ste_N.npy  gxi_fp32_N.npy  gxi_qat_ste_N.npy")
 
 def interactive_menu():
     print("\n" + "=" * 60)
