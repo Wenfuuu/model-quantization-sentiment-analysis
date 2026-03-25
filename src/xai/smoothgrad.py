@@ -188,7 +188,7 @@ class SmoothGradExplainer:
             n_steps=self.n_steps,
             baselines=baseline,
         )
-        return attributions.sum(dim=-1).squeeze(0).detach().cpu().float().numpy()
+        return attributions.mean(dim=-1).squeeze(0).detach().cpu().float().numpy()
 
     def explain(
         self,
@@ -228,7 +228,7 @@ class SmoothGradExplainer:
         )
 
         smoothed_scores = (
-            smoothed_attr.sum(dim=-1).squeeze(0).detach().cpu().float().numpy()
+            smoothed_attr.mean(dim=-1).squeeze(0).detach().cpu().float().numpy()
         )
         tokens = self.tokenizer.convert_ids_to_tokens(input_ids[0].cpu())
 
@@ -287,7 +287,7 @@ class SmoothGradExplainer:
             )
 
             draw_score = (
-                draw_attr.sum(dim=-1).squeeze(0).detach().cpu().float().numpy()
+                draw_attr.mean(dim=-1).squeeze(0).detach().cpu().float().numpy()
             )
             draw_scores.append(draw_score)
 

@@ -4,7 +4,7 @@ from typing import Dict, List, Sequence, Tuple
 import warnings
 import numpy as np
 import torch
-from captum.attr import IntegratedGradients
+from captum.attr import LayerIntegratedGradients
 from scipy.stats import spearmanr
 from torch.nn.functional import softmax, cosine_similarity as torch_cosine
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -37,20 +37,20 @@ def integrated_gradients_tokens(
 
     target_class = target if target is not None else pred_class
 
-    embeddings = model.bert.embeddings.word_embeddings(input_ids)
+    emb_layer = model.bert.embeddings.word_embeddings
 
-    def forward_fn(embeds: torch.Tensor, mask: torch.Tensor):
-        outputs = model(inputs_embeds=embeds, attention_mask=mask)
+    def forward_fn(input_ids_: torch.Tensor):
+        outputs = model(input_ids=input_ids_, attention_mask=attention_mask)
         return outputs.logits
 
-    ig = IntegratedGradients(lambda e: forward_fn(e, attention_mask))
+    lig = LayerIntegratedGradients(forward_fn, emb_layer)
 
     try:
-        attributions = ig.attribute(
-            embeddings,
+        attributions = lig.attribute(
+            inputs=input_ids,
+            baselines=torch.zeros_like(input_ids),
             target=target_class,
             n_steps=30,
-            baselines=torch.zeros_like(embeddings),
         )
     except RuntimeError as exc:
         msg = str(exc)
@@ -60,9 +60,9 @@ def integrated_gradients_tokens(
             "Returning zero attributions.",
             RuntimeWarning,
         )
-        attributions = torch.zeros_like(embeddings)
+        attributions = torch.zeros_like(model.bert.embeddings.word_embeddings(input_ids))
 
-    token_attrs = attributions.sum(dim=-1).squeeze().detach().cpu().numpy()
+    token_attrs = attributions.mean(dim=-1).squeeze().detach().cpu().numpy()
     tokens = tokenizer.convert_ids_to_tokens(input_ids[0].cpu())
     return tokens, token_attrs
 
