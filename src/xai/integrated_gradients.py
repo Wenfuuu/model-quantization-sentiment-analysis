@@ -1,10 +1,9 @@
 import warnings
 import torch
 import numpy as np
-from captum.attr import IntegratedGradients
+from captum.attr import LayerIntegratedGradients
 
-IG_SUPPORTED_PRECISIONS = frozenset({"fp32", "fp16", "qat_fp32", "qat_int8"})
-
+IG_SUPPORTED_PRECISIONS = frozenset({"fp32", "fp16", "qat_fp32", "qat_int8", "qat_ste"})
 
 class IntegratedGradientsExplainer:
     def __init__(self, model, tokenizer, device=None, precision="fp32"):
@@ -32,18 +31,18 @@ class IntegratedGradientsExplainer:
 
         target_class = predicted if target is None else target
 
-        embeddings = self.model.bert.embeddings.word_embeddings(input_ids)
+        emb_layer = self.model.bert.embeddings.word_embeddings
 
-        def forward_fn(embeds):
-            return self.model(inputs_embeds=embeds, attention_mask=attention_mask).logits
+        def forward_fn(input_ids_):
+            return self.model(input_ids=input_ids_, attention_mask=attention_mask).logits
 
-        ig = IntegratedGradients(forward_fn)
+        lig = LayerIntegratedGradients(forward_fn, emb_layer)
         try:
-            attributions = ig.attribute(
-                embeddings,
+            attributions = lig.attribute(
+                inputs=input_ids,
+                baselines=torch.zeros_like(input_ids),
                 target=target_class,
                 n_steps=steps,
-                baselines=torch.zeros_like(embeddings),
             )
         except RuntimeError as exc:
             msg = str(exc)
@@ -56,7 +55,7 @@ class IntegratedGradientsExplainer:
                 + msg
             ) from exc
 
-        scores = attributions.sum(dim=-1).squeeze().detach().cpu().numpy()
+        scores = attributions.mean(dim=-1).squeeze().detach().cpu().numpy()
 
         if np.allclose(scores, 0.0):
             warnings.warn(
