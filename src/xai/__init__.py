@@ -5,6 +5,7 @@ from .occlusion import OcclusionExplainer
 from .ig_metrics import (
 	attribution_similarity,
 	integrated_gradients_tokens,
+	gradient_times_input_tokens,
 	InsertionDeletionEvaluator,
 	InsertionDeletionResult,
 	layer_cls_similarity,
@@ -80,6 +81,7 @@ __all__ = [
 	"OcclusionExplainer",
 	"attribution_similarity",
 	"integrated_gradients_tokens",
+	"gradient_times_input_tokens",
 	"InsertionDeletionEvaluator",
 	"InsertionDeletionResult",
 	"layer_cls_similarity",
