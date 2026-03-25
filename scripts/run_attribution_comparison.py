@@ -84,8 +84,22 @@ def _save_json(data: dict, path: Path) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"  Saved: {path}")
 
+_INT2LABEL = {0: "POSITIVE", 1: "NEUTRAL", 2: "NEGATIVE"}
+_SUBSAMPLE_CSV = Path(__file__).resolve().parent.parent / "data" / "explainability_subsample_v2.csv"
 
 def _sample_for_xai(test_samples: list, n: int, seed: int = SEED) -> list:
+    import pandas as pd
+
+    if _SUBSAMPLE_CSV.exists():
+        df = pd.read_csv(_SUBSAMPLE_CSV)
+        samples = [
+            {"text": row["text"], "expected": _INT2LABEL[int(row["true_label"])]}
+            for _, row in df.iterrows()
+        ]
+        print(f"  [_sample_for_xai] Loaded {len(samples)} samples from {_SUBSAMPLE_CSV.name}")
+        return samples
+
+    print(f"  [_sample_for_xai] {_SUBSAMPLE_CSV.name} not found — falling back to stratified random selection")
     if n is None or n >= len(test_samples):
         return test_samples
 

@@ -39,9 +39,23 @@ warnings.filterwarnings('ignore')
 
 set_seed(42)
 
+_INT2LABEL = {0: "POSITIVE", 1: "NEUTRAL", 2: "NEGATIVE"}
+_SUBSAMPLE_CSV = Path(__file__).resolve().parent.parent / "data" / "explainability_subsample_v2.csv"
 
 def select_samples(dataset_samples, num_samples=50):
+    import pandas as pd
     import random as _random
+
+    if _SUBSAMPLE_CSV.exists():
+        df = pd.read_csv(_SUBSAMPLE_CSV)
+        samples = [
+            {"text": row["text"], "expected": _INT2LABEL[int(row["true_label"])]}
+            for _, row in df.iterrows()
+        ]
+        print(f"  [select_samples] Loaded {len(samples)} samples from {_SUBSAMPLE_CSV.name}")
+        return samples
+
+    print(f"  [select_samples] {_SUBSAMPLE_CSV.name} not found — falling back to stratified random selection")
     by_label = {}
     for sample in dataset_samples:
         label = sample["expected"]
@@ -68,12 +82,10 @@ def select_samples(dataset_samples, num_samples=50):
 
     return selected[:num_samples]
 
-
 def _resolve_config(version_key):
     is_qat = _is_qat_experiment(version_key)
     config = QAT_EXPERIMENT_CONFIGS[version_key] if is_qat else EXPERIMENT_CONFIGS[version_key]
     return is_qat, config
-
 
 def _resolve_samples(config, num_samples, divergence_samples):
     if divergence_samples:
@@ -84,13 +96,11 @@ def _resolve_samples(config, num_samples, divergence_samples):
         all_samples = load_tweets_dataset()
     return select_samples(all_samples, num_samples)
 
-
 def _save_json(payload, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-
 
 def _load_models_for_precisions(version_key, precisions):
     is_qat, config = _resolve_config(version_key)
@@ -130,7 +140,6 @@ def _load_models_for_precisions(version_key, precisions):
 
     return models
 
-
 def load_divergences(experiment_key):
     if experiment_key in QAT_EXPERIMENT_CONFIGS:
         config = QAT_EXPERIMENT_CONFIGS[experiment_key]
@@ -146,7 +155,6 @@ def load_divergences(experiment_key):
         data = json.load(f)
 
     return data
-
 
 def generate_qat_divergences(experiment_key):
     config = QAT_EXPERIMENT_CONFIGS[experiment_key]
@@ -268,7 +276,6 @@ def generate_qat_divergences(experiment_key):
 
     return divergence_data
 
-
 class OnnxBaseModel:
     def __init__(self, session, tokenizer, hf_model, device):
         self.session = session
@@ -305,7 +312,6 @@ class OnnxBaseModel:
             "probabilities": {LABELS[i]: float(probs[0, i]) for i in range(len(LABELS))},
             "inference_time": end_time - start_time,
         }
-
 
 def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
     lime_explainer = LIMEExplainer(base_model, LABELS, use_fp16=use_fp16)
@@ -379,7 +385,6 @@ def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
 
     return lime_results, shap_results, ig_results, occlusion_results
 
-
 def generate_lime_comparison(all_lime, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -427,7 +432,6 @@ def generate_lime_comparison(all_lime, samples, precisions, output_dir):
         plt.savefig(str(path), dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: {path}")
-
 
 def generate_shap_comparison(all_shap, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)

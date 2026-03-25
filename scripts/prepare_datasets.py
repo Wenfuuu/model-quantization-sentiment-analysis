@@ -13,6 +13,7 @@ import pandas as pd
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DATA_DIR     = _PROJECT_ROOT / "data" / "processed"
 _SMSA_DIR     = _PROJECT_ROOT / "datasets"
+_MODELS_DIR   = _PROJECT_ROOT / "models"
 
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -404,6 +405,52 @@ def task_d(smsa_test: pd.DataFrame, casa: pd.DataFrame | None, hoasa: pd.DataFra
     if not flagged_any:
         print("  All cross-domain classes are >= 10%. No flags.")
 
+_SUBSAMPLE_PER_CLASS = {0: 17, 1: 16, 2: 17}   # pos=17, neu=16, neg=17  → total 50
+_INT2LABEL           = {0: "POSITIVE", 1: "NEUTRAL", 2: "NEGATIVE"}
+
+
+def build_explainability_subsample() -> None:
+    print_divider("Build Explainability Subsample (v2)")
+
+    pred_path = _MODELS_DIR / "fp32_seed42" / "predictions.csv"
+    if not pred_path.exists():
+        print(f"  [SKIP] Predictions not found: {pred_path}")
+        print("  Run multi-seed fine-tuning first (step 1).")
+        return
+
+    df      = pd.read_csv(pred_path)
+    correct = df[df["pred_label"] == df["true_label"]].copy()
+    print(f"  Correctly-classified samples: {len(correct)} / {len(df)}")
+
+    parts = []
+    for label_id, n in _SUBSAMPLE_PER_CLASS.items():
+        pool = correct[correct["true_label"] == label_id]
+        if len(pool) < n:
+            print(f"  [WARN] {_INT2LABEL[label_id]}: only {len(pool)} correct, need {n}")
+            n = len(pool)
+        parts.append(pool.sample(n=n, random_state=42))
+
+    subsample = (
+        pd.concat(parts)[["sample_id", "text", "true_label"]]
+        .reset_index(drop=True)
+    )
+
+    out_path = _DATA_DIR.parent / "explainability_subsample_v2.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    subsample.to_csv(out_path, index=False, encoding="utf-8")
+
+    print(f"\n  Saved -> {out_path}  ({len(subsample)} samples total)")
+    print("\n  Class counts:")
+    for label_id, label_name in _INT2LABEL.items():
+        count = int((subsample["true_label"] == label_id).sum())
+        print(f"    {label_name}: {count}")
+
+    print("\n  Examples (first 3):")
+    for _, row in subsample.head(3).iterrows():
+        snippet = str(row["text"])[:80]
+        label   = _INT2LABEL[int(row["true_label"])]
+        print(f"    [{label}] {snippet}")
+
 def main() -> None:
     print_divider("Dataset Preparation Pipeline")
     print(f"  Output directory: {_DATA_DIR}")
@@ -417,6 +464,8 @@ def main() -> None:
         casa=casa,
         hoasa=hoasa,
     )
+
+    build_explainability_subsample()
 
     print_divider("DONE")
     print(f"  Outputs written to: {_DATA_DIR}")
