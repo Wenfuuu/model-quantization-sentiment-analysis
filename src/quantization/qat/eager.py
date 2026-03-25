@@ -36,6 +36,10 @@ import seaborn as sns
 
 from .config import FinetuneQATConfig
 from src.utils import set_seed
+from src.evaluation.calibration import expected_calibration_error
+
+def _ece(confs, corr):
+    return expected_calibration_error(confs, corr, n_bins=10)["ece"]
 
 
 class EagerQATTrainer:
@@ -1045,8 +1049,11 @@ def qat_onnx_single_seed(
         true_labels, pred_labels, probs, metrics = evaluate_onnx_on_csv(
             dest_onnx, tokenizer, test_csv, max_length=max_length, is_fp16=is_fp16,
         )
+        _conf = np.max(probs, axis=1).tolist()
+        _corr = [int(p == t) for p, t in zip(pred_labels, true_labels)]
+        metrics["ece"] = _ece(_conf, _corr)
         print(f"  {vname.upper()} accuracy={metrics['accuracy']:.4f}  "
-              f"macro-F1={metrics['macro_f1']:.4f}")
+              f"macro-F1={metrics['macro_f1']:.4f}  ECE={metrics['ece']:.4f}")
 
         agreement = None
         if fp32_pred is not None:

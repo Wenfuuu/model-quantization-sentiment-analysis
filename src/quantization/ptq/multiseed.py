@@ -1,9 +1,3 @@
-"""Multi-seed PTQ evaluation pipeline.
-
-Applies FP16, INT8, and INT4 post-training quantization to per-seed FP32
-checkpoints, evaluates on SmSA test, and saves predictions + metrics in the
-same format as the finetuning pipeline.
-"""
 from __future__ import annotations
 
 import json
@@ -23,14 +17,13 @@ from src.quantization.ptq.engine import PTQQuantizer
 from src.quantization.utils import save_quantized_model, get_model_size
 from src.evaluation.evaluator import get_model_param_memory_mb
 from src.quantization.qat.trainer import SentimentCSVDataset
+from src.evaluation.calibration import expected_calibration_error
+
+def _ece(confs, corr):
+    return expected_calibration_error(confs, corr, n_bins=10)["ece"]
 
 _LABEL_NAMES = ["POSITIVE", "NEUTRAL", "NEGATIVE"]
 _NUM_LABELS = 3
-
-
-# =========================================================================
-# Helpers
-# =========================================================================
 
 def _collect_predictions(model, loader):
     """Batch inference → (true_labels, pred_labels, probs_array)."""
@@ -56,7 +49,6 @@ def _collect_predictions(model, loader):
 
 
 def _compute_metrics(true_labels, pred_labels):
-    """Accuracy, weighted P/R/F1, macro-F1, per-class F1."""
     cls_report = classification_report(
         true_labels, pred_labels, target_names=_LABEL_NAMES,
         output_dict=True, zero_division=0,
@@ -72,7 +64,6 @@ def _compute_metrics(true_labels, pred_labels):
 
 
 def _save_predictions_csv(pred_labels, true_labels, probs, texts, save_path):
-    """Same CSV format as FP32 finetuning predictions."""
     pd.DataFrame({
         "sample_id": range(len(pred_labels)),
         "text": texts,
@@ -85,7 +76,6 @@ def _save_predictions_csv(pred_labels, true_labels, probs, texts, save_path):
 
 
 def _measure_latency(model, tokenizer, test_texts, *, num_runs=20, warmup=5):
-    """Per-sample inference latency across all test samples."""
     model.eval()
     all_latencies = []
 
@@ -116,38 +106,31 @@ def _measure_latency(model, tokenizer, test_texts, *, num_runs=20, warmup=5):
         "total_samples": len(test_texts),
     }
 
-
-# =========================================================================
-# Per-variant evaluation
-# =========================================================================
-
 def _evaluate_variant(variant_name, model, test_loader, test_texts,
                       fp32_pred, save_dir, *, measure_latency, tokenizer,
                       num_runs, warmup):
-    """Evaluate one PTQ variant, save outputs, return result dict."""
     save_dir.mkdir(parents=True, exist_ok=True)
 
     true_labels, pred_labels, probs = _collect_predictions(model, test_loader)
     metrics = _compute_metrics(true_labels, pred_labels)
+    _conf = np.max(probs, axis=1).tolist()
+    _corr = [int(p == t) for p, t in zip(pred_labels, true_labels)]
+    metrics["ece"] = _ece(_conf, _corr)
     print(f"  {variant_name.upper()} accuracy={metrics['accuracy']:.4f}  "
-          f"macro-F1={metrics['macro_f1']:.4f}")
+          f"macro-F1={metrics['macro_f1']:.4f}  ECE={metrics['ece']:.4f}")
 
-    # Save model state dict
     model_path = save_dir / f"model_{variant_name}.pth"
     save_quantized_model(model, model_path)
     size_mb = get_model_size(model_path)
     param_mb = get_model_param_memory_mb(model)
     print(f"  Model saved: {model_path} ({size_mb:.2f} MB)")
 
-    # Save predictions CSV
     _save_predictions_csv(pred_labels, true_labels, probs, test_texts,
                           save_dir / "predictions.csv")
 
-    # Save metrics JSON
     with open(save_dir / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
-    # Agreement with FP32
     n_agree = sum(a == b for a, b in zip(fp32_pred, pred_labels))
     agreement = n_agree / max(1, len(fp32_pred))
     print(f"  vs FP32 agreement: {agreement * 100:.2f}%")
@@ -159,7 +142,6 @@ def _evaluate_variant(variant_name, model, test_loader, test_texts,
         "param_memory_mb": param_mb,
     }
 
-    # Latency (seed 42 only)
     if measure_latency:
         print(f"  Measuring latency ({num_runs} runs, {warmup} warmup) ...")
         lat = _measure_latency(model, tokenizer, test_texts,
@@ -168,11 +150,6 @@ def _evaluate_variant(variant_name, model, test_loader, test_texts,
         print(f"  mean={lat['mean_ms']:.2f}ms  median={lat['median_ms']:.2f}ms")
 
     return result, pred_labels
-
-
-# =========================================================================
-# Main per-seed function
-# =========================================================================
 
 def ptq_single_seed(
     seed: int,
@@ -185,15 +162,6 @@ def ptq_single_seed(
     num_runs: int = 20,
     warmup: int = 5,
 ) -> dict:
-    """Apply FP16 / INT8 / INT4 PTQ to one FP32 checkpoint and evaluate.
-
-    Saves per-variant:
-        models/ptq_{fp16,int8,int4}_seed{seed}/predictions.csv
-        models/ptq_{fp16,int8,int4}_seed{seed}/metrics.json
-        models/ptq_{fp16,int8,int4}_seed{seed}/model_{variant}.pth
-
-    Returns structured results dict.
-    """
     print(f"\n{'=' * 70}")
     print(f"#  PTQ  SEED {seed}")
     print(f"{'=' * 70}\n")
@@ -204,28 +172,27 @@ def ptq_single_seed(
             "Run finetuning first."
         )
 
-    # ---- Load FP32 model (CPU) ----
     print(f"Loading FP32 checkpoint from {fp32_ckpt} ...")
     tokenizer = AutoTokenizer.from_pretrained(fp32_ckpt)
     fp32_model = AutoModelForSequenceClassification.from_pretrained(
         fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
     ).cpu().eval()
 
-    # ---- Test data ----
     test_set = SentimentCSVDataset(test_csv, tokenizer, max_length=128)
     test_loader = DataLoader(test_set, batch_size=batch_size,
                              shuffle=False, num_workers=0)
     test_texts = test_set.texts
     print(f"  Test samples: {len(test_set)}")
 
-    # ---- FP32 baseline ----
     print("\n  [FP32] Evaluating baseline ...")
     fp32_true, fp32_pred, fp32_probs = _collect_predictions(fp32_model, test_loader)
     fp32_metrics = _compute_metrics(fp32_true, fp32_pred)
+    _conf = np.max(fp32_probs, axis=1).tolist()
+    _corr = [int(p == t) for p, t in zip(fp32_pred, fp32_true)]
+    fp32_metrics["ece"] = _ece(_conf, _corr)
     print(f"  FP32 accuracy={fp32_metrics['accuracy']:.4f}  "
-          f"macro-F1={fp32_metrics['macro_f1']:.4f}")
+          f"macro-F1={fp32_metrics['macro_f1']:.4f}  ECE={fp32_metrics['ece']:.4f}")
 
-    # Save FP32 predictions for reference
     fp32_save_dir = models_dir / f"ptq_fp32_seed{seed}"
     fp32_save_dir.mkdir(parents=True, exist_ok=True)
     _save_predictions_csv(fp32_pred, fp32_true, fp32_probs, test_texts,
@@ -243,7 +210,6 @@ def ptq_single_seed(
         "fp32": {"metrics": fp32_metrics, "model_size_mb": fp32_size_mb},
     }
 
-    # FP32 latency
     if measure_latency:
         print(f"  [FP32] Measuring latency ({num_runs} runs, {warmup} warmup) ...")
         fp32_lat = _measure_latency(fp32_model, tokenizer, test_texts,
@@ -251,7 +217,6 @@ def ptq_single_seed(
         seed_results["fp32"]["latency"] = fp32_lat
         print(f"  mean={fp32_lat['mean_ms']:.2f}ms  median={fp32_lat['median_ms']:.2f}ms")
 
-    # ---- Quantize ----
     ptq = PTQQuantizer(fp32_model)
 
     variant_specs = [
@@ -276,7 +241,6 @@ def ptq_single_seed(
 
         del q_model
 
-    # ---- Save full results JSON ----
     out_path = models_dir / f"ptq_seed{seed}_results.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(seed_results, f, indent=2, ensure_ascii=False, default=str)

@@ -110,10 +110,6 @@ class QATTrainer:
         print(f"\nQAT complete. Best Validation Accuracy: {best_acc:.4f}")
         return best_acc, best_path
 
-
-# =========================================================================
-# Multi-seed QAT from FP32 checkpoints
-# =========================================================================
 import json
 import random
 import time
@@ -127,6 +123,10 @@ from sklearn.metrics import accuracy_score, classification_report, f1_score
 from transformers import AutoTokenizer
 
 from src.config import DEVICE as _DEVICE
+from src.evaluation.calibration import expected_calibration_error
+
+def _ece(confs, corr):
+    return expected_calibration_error(confs, corr, n_bins=10)["ece"]
 
 _ID2LABEL  = {0: "POSITIVE", 1: "NEUTRAL", 2: "NEGATIVE"}
 _NUM_LABELS = 3
@@ -167,7 +167,6 @@ class SentimentCSVDataset(Dataset):
 
 
 def apply_qat_config(model) -> None:
-    """Attach INT8 fake-quant observers; exclude embedding layer."""
     model.train()
     model.qconfig = tq.QConfig(
         activation=tq.default_fake_quant,
@@ -181,7 +180,6 @@ def apply_qat_config(model) -> None:
 
 
 def strip_observers(state_dict: dict) -> dict:
-    """Remove all observer / fake-quant keys from a state_dict."""
     observer_markers = (
         "activation_post_process",
         "fake_quant",
@@ -274,13 +272,6 @@ def train_qat_seed(
     weight_decay: float = 0.01,
     max_length: int = 128,
 ) -> dict:
-    """Run QAT for a single seed starting from an FP32 checkpoint.
-
-    Saves:
-      - models_dir/qat_seed{seed}_with_observers/  (for STE-IG)
-      - models_dir/qat_seed{seed}_clean/            (for ONNX export)
-      - predictions.csv and metrics.json in the clean dir
-    """
     print(f"\n{'='*70}")
     print(f"#  QAT  SEED {seed}")
     print(f"{'='*70}\n")
@@ -298,18 +289,15 @@ def train_qat_seed(
             "Run scripts/finetune_smsa_fp32_no_sw.py first."
         )
 
-    # ---- Load FP32 checkpoint ----
     print(f"Loading FP32 checkpoint from {fp32_ckpt} ...")
     tokenizer = AutoTokenizer.from_pretrained(fp32_ckpt)
     model = AutoModelForSequenceClassification.from_pretrained(
         fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
     )
 
-    # ---- Insert fake quantizers ----
     apply_qat_config(model)
     model = model.to(device)
 
-    # ---- Datasets ----
     print("Loading datasets ...")
     train_set = SentimentCSVDataset(train_csv, tokenizer, max_length)
     val_set   = SentimentCSVDataset(val_csv,   tokenizer, max_length)
@@ -321,7 +309,6 @@ def train_qat_seed(
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=0)
 
-    # ---- Optimizer / scheduler ----
     optimizer    = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     total_steps  = len(train_loader) * epochs
     warmup_steps = int(0.1 * total_steps)
@@ -330,7 +317,6 @@ def train_qat_seed(
     print(f"\nHyperparameters: epochs={epochs}, lr={lr}, batch={batch_size}, "
           f"wd={weight_decay}, warmup={warmup_steps}/{total_steps} steps, device={device}\n")
 
-    # ---- Training loop ----
     best_val_wf1    = 0.0
     best_state_dict = None
     history = []
@@ -361,7 +347,6 @@ def train_qat_seed(
             best_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             print(f"  [ckpt] New best val wF1={best_val_wf1:.4f}")
 
-    # ---- Save WITH-OBSERVERS checkpoint ----
     print(f"\nSaving with-observers checkpoint -> {obs_dir}")
     torch.save(best_state_dict, obs_dir / "qat_state_dict.pt")
     tokenizer.save_pretrained(obs_dir)
@@ -376,7 +361,6 @@ def train_qat_seed(
             "training_history": history,
         }, f, indent=2)
 
-    # ---- Save CLEAN checkpoint (observers stripped) ----
     print(f"Saving clean checkpoint -> {clean_dir}")
     clean_state = strip_observers(best_state_dict)
     clean_model = AutoModelForSequenceClassification.from_pretrained(
@@ -389,7 +373,6 @@ def train_qat_seed(
     clean_model.save_pretrained(clean_dir)
     tokenizer.save_pretrained(clean_dir)
 
-    # ---- Evaluate CLEAN model on SmSA test ----
     clean_model = clean_model.to(device)
     print(f"\nEvaluating clean model on SmSA test ...")
 
@@ -409,7 +392,6 @@ def train_qat_seed(
         true_labels, pred_labels, target_names=label_names, zero_division=0
     ))
 
-    # ---- Save predictions CSV (same format as FP32 finetuning) ----
     pred_df = pd.DataFrame({
         "sample_id":  range(len(pred_labels)),
         "text":       test_set.texts,
@@ -422,7 +404,6 @@ def train_qat_seed(
     pred_df.to_csv(clean_dir / "predictions.csv", index=False, encoding="utf-8")
     print(f"  Predictions saved -> {clean_dir / 'predictions.csv'}")
 
-    # ---- Save metrics JSON (same format as FP32 finetuning) ----
     metrics = {
         "accuracy":           test_acc,
         "weighted_precision": cls_report["weighted avg"]["precision"],
@@ -431,11 +412,14 @@ def train_qat_seed(
         "macro_f1":           test_macro_f1,
         "per_class_f1": {lbl: cls_report[lbl]["f1-score"] for lbl in label_names},
     }
+    _conf = np.max(probs, axis=1).tolist()
+    _corr = [int(p == t) for p, t in zip(pred_labels, true_labels)]
+    metrics["ece"] = _ece(_conf, _corr)
+    print(f"  ECE={metrics['ece']:.4f}")
     with open(clean_dir / "metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
     print(f"  Metrics saved -> {clean_dir / 'metrics.json'}")
 
-    # ---- FP32 vs QAT-FP32 agreement ----
     fp32_pred_path = fp32_ckpt / "predictions.csv"
     agreement_rate = None
     if fp32_pred_path.exists():
@@ -447,7 +431,6 @@ def train_qat_seed(
     else:
         print(f"\n  [agreement] FP32 predictions not found at {fp32_pred_path} -- skipping")
 
-    # ---- Full results JSON ----
     results = {
         "seed": seed,
         "source_fp32_checkpoint": str(fp32_ckpt),

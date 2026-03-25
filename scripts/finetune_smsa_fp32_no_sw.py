@@ -32,6 +32,10 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.config import DEVICE
 from src.utils import set_seed
+from src.evaluation.calibration import expected_calibration_error
+
+def _ece(confs, corr):
+    return expected_calibration_error(confs, corr, n_bins=10)["ece"]
 
 warnings.filterwarnings("ignore")
 
@@ -253,6 +257,10 @@ def train_single_seed(
             name: cls_report_dict[name]["f1-score"] for name in label_names
         },
     }
+    _conf = np.max(test_probs, axis=1).tolist()
+    _corr = [int(p == t) for p, t in zip(test_preds, test_labels)]
+    metrics["ece"] = _ece(_conf, _corr)
+    print(f"Test ECE:       {metrics['ece']:.4f}")
     metrics_path = save_dir / "metrics.json"
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)

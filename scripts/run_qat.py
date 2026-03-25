@@ -8,6 +8,70 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+if "--generate-ece" in sys.argv:
+    import pandas as _pd
+    _BASE = Path(__file__).parent.parent
+
+    def _ece_arrays(c, r, n_bins=10):
+        c, r = np.asarray(c, float), np.asarray(r, float)
+        edges, ece, n = np.linspace(0.0, 1.0, n_bins + 1), 0.0, len(c)
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            m = (c > lo) & (c <= hi)
+            if m.sum():
+                ece += m.sum() / n * abs(r[m].mean() - c[m].mean())
+        return float(ece)
+
+    def _ece_csv(p):
+        if not p.exists(): return None
+        df = _pd.read_csv(p)
+        return _ece_arrays(df[["prob_pos","prob_neu","prob_neg"]].max(1).tolist(),
+                           (df["pred_label"]==df["true_label"]).astype(int).tolist())
+
+    _SEEDS = [42, 123, 456]
+    _MODELS = _BASE / "models"
+    _VARIANTS = [
+        ("FP32",          lambda s: _MODELS / f"fp32_seed{s}"           / "predictions.csv"),
+        ("PTQ-FP16",      lambda s: _MODELS / f"ptq_fp16_seed{s}"       / "predictions.csv"),
+        ("PTQ-INT8",      lambda s: _MODELS / f"ptq_int8_seed{s}"       / "predictions.csv"),
+        ("PTQ-INT4",      lambda s: _MODELS / f"ptq_int4_seed{s}"       / "predictions.csv"),
+        ("QAT-FP32",      lambda s: _MODELS / f"qat_seed{s}_clean"      / "predictions.csv"),
+        ("QAT-ONNX-FP16", lambda s: _MODELS / f"qat_onnx_fp16_seed{s}"  / "predictions.csv"),
+        ("QAT-ONNX-INT8", lambda s: _MODELS / f"qat_onnx_int8_seed{s}"  / "predictions.csv"),
+        ("QAT-ONNX-INT4", lambda s: _MODELS / f"qat_onnx_int4_seed{s}"  / "predictions.csv"),
+    ]
+
+    rows = []
+    for variant, path_fn in _VARIANTS:
+        for seed in _SEEDS:
+            ece = _ece_csv(path_fn(seed))
+            if ece is not None:
+                rows.append({"variant": variant, "seed": seed, "ece": ece})
+                print(f"  {variant:<18}  seed={seed}  ECE={ece:.6f}")
+
+    if rows:
+        _out = _BASE / "results"
+        _out.mkdir(parents=True, exist_ok=True)
+
+        _df = _pd.DataFrame(rows)
+        _df.to_csv(_out / "ece_all.csv", index=False)
+        print(f"\n  Saved -> {_out / 'ece_all.csv'}")
+
+        _summ = (_df.groupby("variant")["ece"]
+                    .agg(mean_ece="mean", std_ece="std")
+                    .reset_index()
+                    .sort_values("mean_ece"))
+        _summ.to_csv(_out / "ece_summary.csv", index=False)
+        print(f"  Saved -> {_out / 'ece_summary.csv'}")
+
+        print("\n" + "=" * 58)
+        print(f"  {'Variant':<18}  {'Mean ECE':>10}  {'Std ECE':>10}")
+        print("  " + "-" * 54)
+        for _, r in _summ.iterrows():
+            s = f"{r['std_ece']:.6f}" if not np.isnan(r["std_ece"]) else "    N/A"
+            print(f"  {r['variant']:<18}  {r['mean_ece']:>10.6f}  {s:>10}")
+        print("=" * 58)
+    sys.exit(0)
+
 from src.config import BASE_DIR, DATASET_PATHS, TRAINING_SEEDS
 from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
@@ -192,11 +256,6 @@ def run_multiseed_qat(
         json.dump(agg, f, indent=2, ensure_ascii=False)
     print(f"  Aggregated results saved -> {agg_path}")
 
-
-# =========================================================================
-# Multi-seed QAT → ONNX export + quantisation + evaluation
-# =========================================================================
-
 def run_multiseed_qat_onnx(seeds: list = None) -> None:
     """Export clean QAT checkpoints to ONNX, quantise (INT8/FP16/INT4),
     evaluate with ORT, and generate the combined summary CSV."""
@@ -233,7 +292,6 @@ def run_multiseed_qat_onnx(seeds: list = None) -> None:
         )
         all_results.append(result)
 
-    # ---- Aggregated table ----
     onnx_variants = ["int8", "fp16", "int4"]
 
     print("\n" + "=" * 70)
@@ -260,26 +318,42 @@ def run_multiseed_qat_onnx(seeds: list = None) -> None:
     print("  QAT-ONNX export complete.")
     print("=" * 70 + "\n")
 
-    # ---- Generate combined 8-variant CSV ----
     _generate_combined_csv(seeds)
 
 
-def _generate_combined_csv(seeds: list) -> None:
-    """Build results/classification_summary_multiseed.csv with ALL 8 variants
-    across all seeds.  Agreement is always vs the original FP32 checkpoint."""
+def _ece_from_arrays(confidences, correct, n_bins=10):
+    conf = np.asarray(confidences, dtype=float)
+    corr = np.asarray(correct, dtype=float)
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece, n = 0.0, len(conf)
+    for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+        mask = (conf > lo) & (conf <= hi)
+        if mask.sum() == 0:
+            continue
+        ece += mask.sum() / n * abs(corr[mask].mean() - conf[mask].mean())
+    return float(ece)
 
+
+def _ece_from_csv(pred_csv: Path) -> "float | None":
+    if not pred_csv.exists():
+        return None
+    df = pd.read_csv(pred_csv)
+    confs = df[["prob_pos", "prob_neu", "prob_neg"]].max(axis=1).tolist()
+    corr  = (df["pred_label"] == df["true_label"]).astype(int).tolist()
+    return _ece_from_arrays(confs, corr)
+
+
+def _generate_combined_csv(seeds: list) -> None:
     import pandas as pd
 
     rows = []
 
     for seed in seeds:
-        # Load FP32 predictions for agreement reference
         fp32_pred_path = _MODELS_DIR / f"fp32_seed{seed}" / "predictions.csv"
         fp32_pred = None
         if fp32_pred_path.exists():
             fp32_pred = pd.read_csv(fp32_pred_path)["pred_label"].astype(int).tolist()
 
-        # ---- 1. FP32 baseline ----
         fp32_metrics = _MODELS_DIR / f"fp32_seed{seed}" / "metrics.json"
         if fp32_metrics.exists():
             m = json.loads(fp32_metrics.read_text())
@@ -289,9 +363,9 @@ def _generate_combined_csv(seeds: list) -> None:
                 "smsa_acc": m.get("accuracy"),
                 "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
                 "agreement_rate": 1.0,
+                "ece": _ece_from_csv(_MODELS_DIR / f"fp32_seed{seed}" / "predictions.csv"),
             })
 
-        # ---- 2-4. PTQ variants ----
         for ptq_v in ["fp16", "int8", "int4"]:
             d = _MODELS_DIR / f"ptq_{ptq_v}_seed{seed}"
             mp = d / "metrics.json"
@@ -305,9 +379,9 @@ def _generate_combined_csv(seeds: list) -> None:
                     "smsa_acc": m.get("accuracy"),
                     "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
                     "agreement_rate": agr,
+                    "ece": _ece_from_csv(pp),
                 })
 
-        # ---- 5. QAT-FP32 (clean model, PyTorch eval) ----
         qat_clean = _MODELS_DIR / f"qat_seed{seed}_clean"
         mp = qat_clean / "metrics.json"
         pp = qat_clean / "predictions.csv"
@@ -320,9 +394,9 @@ def _generate_combined_csv(seeds: list) -> None:
                 "smsa_acc": m.get("accuracy"),
                 "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
                 "agreement_rate": agr,
+                "ece": _ece_from_csv(pp),
             })
 
-        # ---- 6-8. QAT-ONNX variants ----
         for ov in ["fp16", "int8", "int4"]:
             d = _MODELS_DIR / f"qat_onnx_{ov}_seed{seed}"
             mp = d / "metrics.json"
@@ -336,6 +410,7 @@ def _generate_combined_csv(seeds: list) -> None:
                     "smsa_acc": m.get("accuracy"),
                     "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
                     "agreement_rate": agr,
+                    "ece": _ece_from_csv(pp),
                 })
 
     if not rows:
@@ -344,7 +419,6 @@ def _generate_combined_csv(seeds: list) -> None:
 
     df = pd.DataFrame(rows)
 
-    # ---- Print combined table ----
     print("\n" + "=" * 70)
     print("  COMBINED 8-VARIANT SUMMARY (mean ± std across seeds)")
     print("=" * 70)
@@ -363,16 +437,39 @@ def _generate_combined_csv(seeds: list) -> None:
         print(f"  {variant:<16} {acc_m:.4f} ± {acc_s:.4f}    "
               f"{f1_m:.4f} ± {f1_s:.4f}    {agr_str:>12}")
 
-    # ---- Save CSV ----
     out_dir = BASE_DIR / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "classification_summary_multiseed.csv"
     df.to_csv(csv_path, index=False, encoding="utf-8")
     print(f"\n  Combined CSV saved -> {csv_path}")
 
+    ece_rows = df[["variant", "seed", "ece"]].dropna(subset=["ece"]).copy()
+    if not ece_rows.empty:
+        ece_all_path = out_dir / "ece_all.csv"
+        ece_rows.to_csv(ece_all_path, index=False, encoding="utf-8")
+        print(f"  ECE (all seeds)   -> {ece_all_path}")
+
+        ece_summary = (
+            ece_rows.groupby("variant")["ece"]
+            .agg(mean_ece="mean", std_ece="std")
+            .reset_index()
+            .sort_values("mean_ece")
+            .reset_index(drop=True)
+        )
+        ece_summary_path = out_dir / "ece_summary.csv"
+        ece_summary.to_csv(ece_summary_path, index=False, encoding="utf-8")
+        print(f"  ECE (summary)     -> {ece_summary_path}")
+
+        print("\n" + "=" * 58)
+        print(f"  {'Variant':<18}  {'Mean ECE':>10}  {'Std ECE':>10}")
+        print("  " + "-" * 54)
+        for _, r in ece_summary.iterrows():
+            std_str = f"{r['std_ece']:.6f}" if not np.isnan(r["std_ece"]) else "    N/A"
+            print(f"  {r['variant']:<18}  {r['mean_ece']:>10.6f}  {std_str:>10}")
+        print("=" * 58)
+
 
 def _agreement(fp32_pred: list | None, pred_csv: Path) -> float | None:
-    """Compute prediction agreement between FP32 and a variant."""
     if fp32_pred is None or not pred_csv.exists():
         return None
     import pandas as pd
@@ -390,13 +487,16 @@ def interactive_menu():
     print("  [1] ONNX QAT (Eager — original pipeline)")
     print("  [2] Multi-Seed QAT (FP32 → QAT-FP32, seeds 42/123/456)")
     print("  [3] Multi-Seed QAT-ONNX (QAT → ONNX export + INT8/FP16/INT4)")
+    print("  [4] Generate ECE summary from existing prediction CSVs")
 
-    pipeline_choice = input("\n  Enter choice (1/2/3): ").strip()
+    pipeline_choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
     if pipeline_choice == "2":
         return "multiseed", None, None, None, None, None
     if pipeline_choice == "3":
         return "multiseed_onnx", None, None, None, None, None
+    if pipeline_choice == "4":
+        return "generate_ece", None, None, None, None, None
 
     methods = ["eager"]
 
@@ -606,7 +706,17 @@ def main():
         default=False,
         help="Export clean QAT checkpoints to ONNX, quantise, and evaluate",
     )
+    parser.add_argument(
+        "--generate-ece",
+        action="store_true",
+        default=False,
+        help="Generate results/ece_all.csv and results/ece_summary.csv from existing prediction CSVs",
+    )
     args = parser.parse_args()
+
+    if args.generate_ece:
+        _generate_combined_csv(list(TRAINING_SEEDS))
+        return
 
     if args.multiseed_qat:
         run_multiseed_qat(epochs=args.qat_epochs, lr=args.qat_lr)

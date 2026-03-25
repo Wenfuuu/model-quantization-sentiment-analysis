@@ -26,6 +26,8 @@ outputs/
 *.bin
 *.onnx
 
+results/
+
 .ipynb_checkpoints
 *.log
 
