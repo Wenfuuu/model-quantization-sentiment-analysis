@@ -5,12 +5,15 @@ from pathlib import Path
 
 
 class LIMEExplainer:
-    def __init__(self, base_model, labels, use_fp16=False):
+    def __init__(self, base_model, labels, use_fp16=False, random_state=None):
         self.base_model = base_model
         self.labels = labels
         self.use_fp16 = use_fp16
         self.label_names = [labels[i] for i in sorted(labels.keys())]
-        self.explainer = LimeTextExplainer(class_names=self.label_names)
+        self.explainer = LimeTextExplainer(
+            class_names=self.label_names,
+            random_state=random_state,
+        )
 
     def predict_proba(self, texts):
         probabilities = []
