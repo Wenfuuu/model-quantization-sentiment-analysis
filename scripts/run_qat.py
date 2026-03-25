@@ -337,6 +337,7 @@ def _ece_from_arrays(confidences, correct, n_bins=10):
 def _ece_from_csv(pred_csv: Path) -> "float | None":
     if not pred_csv.exists():
         return None
+    import pandas as pd
     df = pd.read_csv(pred_csv)
     confs = df[["prob_pos", "prob_neu", "prob_neg"]].max(axis=1).tolist()
     corr  = (df["pred_label"] == df["true_label"]).astype(int).tolist()
