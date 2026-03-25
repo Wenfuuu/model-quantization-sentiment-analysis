@@ -21,7 +21,9 @@ from src.xai import (
     SHAPExplainer,
     IntegratedGradientsExplainer,
     OcclusionExplainer,
+    build_alignment,
     build_alignment_batch,
+    project_subword_to_word,
     fragmentation_report,
     analyze_attention_batch,
     compare_attention_batch,
@@ -615,6 +617,117 @@ def generate_prediction_summary(all_lime, samples, precisions, output_dir):
     print(f"  Saved: {path}")
 
 
+def run_ste_ig_analysis():
+    import pandas as pd
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
+    _FP32_DIR = _PROJECT_ROOT / "models" / "fp32_seed42"
+    _QAT_DIR = _PROJECT_ROOT / "models" / "qat_seed42_with_observers"
+    _OUT_DIR = _PROJECT_ROOT / "results" / "attributions"
+    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not _SUBSAMPLE_CSV.exists():
+        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
+        print("  Run: python scripts/prepare_datasets.py  (requires models/fp32_seed42/predictions.csv)")
+        return
+    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
+    samples = [
+        {"sample_id": int(row["sample_id"]), "text": row["text"],
+         "expected": _INT2LABEL[int(row["true_label"])]}
+        for _, row in df_sub.iterrows()
+    ]
+    print(f"\n  Loaded {len(samples)} samples from {_SUBSAMPLE_CSV.name}")
+
+    print(f"\n  Loading FP32 model: {_FP32_DIR}")
+    fp32_model = ModelManager.load_model(str(_FP32_DIR))
+    fp32_model.model.eval()
+
+    if not _QAT_DIR.exists():
+        print(f"  [ERROR] QAT model directory not found: {_QAT_DIR}")
+        print("  Run QAT training first (multiseed_qat saves qat_seed42_with_observers/).")
+        return
+    print(f"\n  Loading QAT model: {_QAT_DIR}")
+    qat_model = ModelManager.load_model(str(_QAT_DIR))
+    qat_model.model.eval()
+
+    print("\n  Verifying fake quantizers in QAT model:")
+    observer_names = [
+        name for name, mod in qat_model.model.named_modules()
+        if "FakeQuantize" in type(mod).__name__ or "Observer" in type(mod).__name__
+    ]
+    if observer_names:
+        print(f"  Found {len(observer_names)} observer/fake-quantizer module(s):")
+        for n in observer_names[:10]:
+            print(f"    {n}")
+        if len(observer_names) > 10:
+            print(f"    ... and {len(observer_names) - 10} more")
+    else:
+        print("  [WARN] No FakeQuantize/Observer modules found. Gradients may not flow via STE.")
+
+    tokenizer = fp32_model.tokenizer
+
+    ig_fp32 = IntegratedGradientsExplainer(
+        fp32_model.model, tokenizer, device=fp32_model.device, precision="fp32"
+    )
+    ig_qat = IntegratedGradientsExplainer(
+        qat_model.model, tokenizer, device=qat_model.device, precision="qat_ste"
+    )
+
+    metadata_rows = []
+    example_count = 0
+
+    print(f"\n  Running IG on {len(samples)} samples (n_steps=30, MEAN aggregation)...\n")
+
+    for idx, sample in enumerate(samples):
+        sid = sample["sample_id"]
+        text = sample["text"]
+        expected = sample["expected"]
+
+        alignment = build_alignment(text, tokenizer)
+
+        res_fp32 = ig_fp32.explain(text, steps=30)
+        words_fp32, word_scores_fp32 = project_subword_to_word(
+            res_fp32["tokens"], res_fp32["scores"], alignment, strategy="mean"
+        )
+
+        res_qat = ig_qat.explain(text, steps=30)
+        words_qat, word_scores_qat = project_subword_to_word(
+            res_qat["tokens"], res_qat["scores"], alignment, strategy="mean"
+        )
+
+        np.save(_OUT_DIR / f"ig_fp32_{sid}.npy", word_scores_fp32)
+        np.save(_OUT_DIR / f"ig_qat_ste_{sid}.npy", word_scores_qat)
+
+        metadata_rows.append({
+            "sample_id": sid,
+            "text": text,
+            "expected": expected,
+            "predicted_fp32": _INT2LABEL.get(res_fp32["predicted_class"], str(res_fp32["predicted_class"])),
+            "predicted_qat_ste": _INT2LABEL.get(res_qat["predicted_class"], str(res_qat["predicted_class"])),
+            "n_words": len(words_fp32),
+            "npy_fp32": f"ig_fp32_{sid}.npy",
+            "npy_qat_ste": f"ig_qat_ste_{sid}.npy",
+        })
+
+        if example_count < 3:
+            example_count += 1
+            print(f"  ── Example {example_count}: [{expected}] \"{text[:80]}\"")
+            top5_fp32 = sorted(zip(words_fp32, word_scores_fp32), key=lambda x: -abs(x[1]))[:5]
+            top5_qat = sorted(zip(words_qat, word_scores_qat), key=lambda x: -abs(x[1]))[:5]
+            print("    FP32  top-5: " + "  ".join(f"{w}({s:+.3f})" for w, s in top5_fp32))
+            print("    QAT   top-5: " + "  ".join(f"{w}({s:+.3f})" for w, s in top5_qat))
+            print()
+
+        if (idx + 1) % 10 == 0:
+            print(f"  [{idx + 1}/{len(samples)}] done")
+
+    meta_path = _OUT_DIR / "ig_metadata.csv"
+    pd.DataFrame(metadata_rows).to_csv(meta_path, index=False, encoding="utf-8")
+    print(f"\n  Saved metadata → {meta_path}")
+    print(f"  Saved {len(metadata_rows)} × 2 .npy files in {_OUT_DIR}")
+
+
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  XAI ANALYSIS RUNNER")
@@ -623,11 +736,15 @@ def interactive_menu():
     print("\n  Select Quantization Method:")
     print("  [1] PTQ (Post-Training Quantization)")
     print("  [2] QAT (Quantization-Aware Training)")
+    print("  [3] STE-IG (LayerIntegratedGradients: FP32 vs QAT-with-observers)")
 
-    method_choice = input("\n  Enter choice (1/2): ").strip()
+    method_choice = input("\n  Enter choice (1/2/3): ").strip()
 
     if method_choice == "2":
         return _qat_menu()
+
+    if method_choice == "3":
+        return "ste_ig", [], 50, None
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
