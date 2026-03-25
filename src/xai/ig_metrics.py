@@ -66,6 +66,34 @@ def integrated_gradients_tokens(
     tokens = tokenizer.convert_ids_to_tokens(input_ids[0].cpu())
     return tokens, token_attrs
 
+def gradient_times_input_tokens(
+    model: AutoModelForSequenceClassification,
+    tokenizer: AutoTokenizer,
+    text: str,
+    target: int = None,
+) -> Tuple[List[str], np.ndarray]:
+    encoding = tokenizer(text, return_tensors="pt")
+    device = next(model.parameters()).device
+    input_ids = encoding["input_ids"].to(device)
+    attention_mask = encoding["attention_mask"].to(device)
+
+    with torch.no_grad():
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+        pred_class = int(torch.argmax(logits, dim=-1).item())
+
+    target_class = target if target is not None else pred_class
+
+    embeddings = model.bert.embeddings.word_embeddings(input_ids).detach().requires_grad_(True)
+
+    logits = model(inputs_embeds=embeddings, attention_mask=attention_mask).logits
+
+    model.zero_grad()
+    logits[0, target_class].backward()
+
+    gxi = (embeddings.grad * embeddings).sum(dim=-1).squeeze().detach().cpu().numpy()
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0].cpu())
+    return tokens, gxi
+
 def attribution_similarity(
     model_a: AutoModelForSequenceClassification,
     model_b: AutoModelForSequenceClassification,
