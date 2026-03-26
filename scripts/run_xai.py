@@ -44,7 +44,7 @@ from src.xai.shap_explainer import run_shap_attribution
 from src.xai.occlusion import run_occlusion_attribution, run_cross_seed_verification
 from src.xai.random_baseline import run_random_baselines
 from src.evaluation.calibration import run_ste_calibration
-from src.evaluation.explanation_drift import run_stability_analysis, compute_power_analysis, compute_cross_method_agreement
+from src.evaluation.explanation_drift import run_stability_analysis, compute_power_analysis, compute_cross_method_agreement, probe_attribution_analysis
 from src.evaluation.faithfulness import run_faithfulness_evaluation
 
 warnings.filterwarnings('ignore')
@@ -604,8 +604,9 @@ def interactive_menu():
     print("  [10] Stability Analysis (FP32 vs 7 variants, Spearman+Jaccard+Bootstrap+Bonferroni)")
     print("  [11] Faithfulness Evaluation (Suff+Comp k=5, all 8 variants x LIME/OCC/SHAP)")
     print("  [12] Cross-method Agreement (FP32 ig/gxi/lime/occ/shap Spearman NxN matrix)")
+    print("  [13] Probe Attribution Analysis (phenomenon token ranks, Occlusion, 3 variants)")
 
-    method_choice = input("\n  Enter choice (1-12): ").strip()
+    method_choice = input("\n  Enter choice (1-13): ").strip()
 
     if method_choice == "2":
         return _qat_menu()
@@ -639,6 +640,9 @@ def interactive_menu():
 
     if method_choice == "12":
         return "cross_method", [], 50, None
+
+    if method_choice == "13":
+        return "probe_attr", [], 50, None
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
