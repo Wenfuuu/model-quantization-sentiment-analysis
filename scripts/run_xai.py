@@ -987,7 +987,7 @@ def run_shap_attribution():
                     values = shap_values[0].values
                     for j, token in enumerate(data):
                         if isinstance(token, str) and token.strip():
-                            scores_dict[token] = float(values[j][predicted_class])
+                            scores_dict[token.strip()] = float(values[j][predicted_class])
                 word_scores = np.array(
                     [scores_dict.get(w, 0.0) for w in text.split()],
                     dtype=np.float32,
@@ -1129,6 +1129,130 @@ def run_occlusion_attribution():
     print(f"  File pattern: occ_{{variant}}_{{sample_id}}.npy")
 
 
+def run_ste_calibration():
+    import pandas as pd
+    from scipy.stats import spearmanr
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
+    _OUT_DIR      = _PROJECT_ROOT / "results" / "attributions"
+    _RESULT_CSV   = _PROJECT_ROOT / "results" / "ste_calibration.csv"
+
+    if not _SUBSAMPLE_CSV.exists():
+        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
+        return
+    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
+    sample_ids = df_sub["sample_id"].tolist()[:20]
+    print(f"\n  STE Calibration: first 20 sample IDs from {_SUBSAMPLE_CSV.name}")
+
+    COMPARE_VARIANTS = ["qat_onnx_int8", "qat_onnx_int4"]
+    rows = []
+    missing_ig = 0
+
+    for vname in COMPARE_VARIANTS:
+        for sid in sample_ids:
+            ig_path  = _OUT_DIR / f"ig_qat_ste_{sid}.npy"
+            occ_path = _OUT_DIR / f"occ_{vname}_{sid}.npy"
+
+            if not ig_path.exists():
+                missing_ig += 1
+                continue
+            if not occ_path.exists():
+                print(f"  [SKIP] occ_{vname}_{sid}.npy not found")
+                continue
+
+            ig_scores  = np.load(ig_path).astype(np.float64)
+            occ_scores = np.load(occ_path).astype(np.float64)
+            L = min(len(ig_scores), len(occ_scores))
+            rho, _ = spearmanr(ig_scores[:L], occ_scores[:L])
+            rows.append({"sample_id": sid, "variant": vname, "spearman_rho": float(rho)})
+
+    if missing_ig > 0:
+        print(f"  [WARN] {missing_ig} ig_qat_ste_*.npy files missing — run STE-IG first (option [3])")
+    if not rows:
+        print("  [WARN] No data to compute. Aborting.")
+        return
+
+    df = pd.DataFrame(rows)
+    _RESULT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(_RESULT_CSV, index=False, encoding="utf-8")
+    print(f"  Saved {len(rows)} rows -> {_RESULT_CSV}")
+
+    print()
+    for vname in COMPARE_VARIANTS:
+        sub = df[df["variant"] == vname]["spearman_rho"]
+        if sub.empty:
+            print(f"  {vname}: no data")
+            continue
+        mean_rho = sub.mean()
+        if mean_rho >= 0.6:
+            verdict = "VALID"
+        elif mean_rho >= 0.4:
+            verdict = "MARGINAL"
+        else:
+            verdict = "UNRELIABLE"
+        print(f"  {vname:20s}: mean_rho={mean_rho:.3f}  n={len(sub)}  -> {verdict}")
+
+
+def run_random_baselines():
+    import pandas as pd
+    from src.xai.random_baseline import RandomAttributionBaseline
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
+    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
+    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not _SUBSAMPLE_CSV.exists():
+        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
+        return
+    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
+    samples = [(int(row["sample_id"]), row["text"]) for _, row in df_sub.iterrows()]
+
+    baseline  = RandomAttributionBaseline(baseline_seed=42, n_draws=30)
+    n_draws   = baseline.n_draws
+    n_total   = len(samples) * n_draws
+    n_done    = 0
+    n_skipped = 0
+
+    print(f"\n  Random Baselines: {len(samples)} samples x {n_draws} draws = {n_total} files")
+    print(f"  sigma source priority: ig_fp32 > occ_fp32 > shap_fp32")
+    print(f"  Output: {_OUT_DIR}")
+
+    for sid, text in samples:
+        sigma_source = None
+        for prefix in ("ig_fp32", "occ_fp32", "shap_fp32"):
+            p = _OUT_DIR / f"{prefix}_{sid}.npy"
+            if p.exists():
+                sigma_source = p
+                break
+
+        if sigma_source is None:
+            print(f"  [SKIP] sid={sid}: no sigma source (ig_fp32/occ_fp32/shap_fp32)")
+            n_skipped += n_draws
+            continue
+
+        real_scores = np.load(sigma_source).astype(np.float64)
+        words = text.split()
+        L = min(len(words), len(real_scores))
+        real_scores = real_scores[:L]
+        words_trimmed = words[:L]
+
+        for i in range(n_draws):
+            out_path = _OUT_DIR / f"random_{sid}_{i}.npy"
+            if out_path.exists():
+                n_done += 1
+                continue
+            result = baseline.draw(text, words_trimmed, real_scores, i)
+            np.save(out_path, result.scores.astype(np.float32))
+            n_done += 1
+
+        if n_done % 500 == 0 or n_done + n_skipped == n_total:
+            print(f"  [progress] {n_done}/{n_total}  skipped={n_skipped}")
+
+    print(f"\n  Random baselines complete: {n_done}/{n_total} files saved  skipped={n_skipped}")
+    print(f"  File pattern: random_{{sample_id}}_{{run}}.npy")
+
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  XAI ANALYSIS RUNNER")
@@ -1141,8 +1265,10 @@ def interactive_menu():
     print("  [4] LIME Attribution (all 8 seed-42 variants, 1000 samples, resumable)")
     print("  [5] SHAP Attribution (all 8 seed-42 variants, max_evals=500, resumable)")
     print("  [6] Occlusion Attribution (all 8 seed-42 variants, window=1, resumable)")
+    print("  [7] STE Calibration (Spearman: ig_qat_ste vs occ_qat_onnx_int8/int4, first 20 samples)")
+    print("  [8] Random Baselines (30 draws x 50 samples, sigma from fp32 attributions)")
 
-    method_choice = input("\n  Enter choice (1-6): ").strip()
+    method_choice = input("\n  Enter choice (1-8): ").strip()
 
     if method_choice == "2":
         return _qat_menu()
@@ -1158,6 +1284,12 @@ def interactive_menu():
 
     if method_choice == "6":
         return "occ_attr", [], 50, None
+
+    if method_choice == "7":
+        return "ste_cal", [], 20, None
+
+    if method_choice == "8":
+        return "rand_base", [], 50, None
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
