@@ -50,6 +50,7 @@ class ModelManager:
         weight_candidates = [
             model_dir / "model.safetensors",
             model_dir / "pytorch_model.bin",
+            model_dir / "qat_state_dict.pt",
         ]
         has_weights = any(path.exists() for path in weight_candidates)
         has_config = (model_dir / "config.json").exists()
