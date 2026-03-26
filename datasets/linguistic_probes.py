@@ -12,6 +12,7 @@ class LinguisticProbe:
     description: str
     minimal_pair: Optional[str] = None
     source: str = "manual"
+    expected_direction: str = ""
 
 PHENOMENON_CATEGORIES = {
     "negation":           "Lexical negation (tidak, bukan, tak, belum, jangan)",
@@ -264,17 +265,29 @@ PROBE_SET: List[LinguisticProbe] = [
     ),
 ]
 
+_PROBE_JSON = Path(__file__).resolve().parent.parent / "data" / "probes_v2_validated.json"
+
+_PROBE_FIELDS = {f for f in LinguisticProbe.__dataclass_fields__}
+
+def _load_probe_set() -> List[LinguisticProbe]:
+    if _PROBE_JSON.exists():
+        with open(_PROBE_JSON, encoding="utf-8") as _f:
+            _raw = json.load(_f)
+        return [LinguisticProbe(**{k: v for k, v in e.items() if k in _PROBE_FIELDS}) for e in _raw]
+    return list(PROBE_SET)
+
+
 def get_probes_by_phenomenon(phenomenon: str) -> List[LinguisticProbe]:
-    return [p for p in PROBE_SET if p.phenomenon == phenomenon]
+    return [p for p in _load_probe_set() if p.phenomenon == phenomenon]
 
 
 def get_all_probes() -> List[LinguisticProbe]:
-    return list(PROBE_SET)
+    return _load_probe_set()
 
 
 def get_probe_samples(include_minimal_pairs: bool = False) -> List[dict]:
     samples = []
-    for probe in PROBE_SET:
+    for probe in _load_probe_set():
         samples.append({
             "text": probe.text,
             "expected": probe.expected_label,
@@ -299,7 +312,6 @@ def get_probe_samples(include_minimal_pairs: bool = False) -> List[dict]:
             })
     return samples
 
-
 def probe_accuracy_by_phenomenon(
     predictions: List[dict],
     probes: Optional[List[LinguisticProbe]] = None,
@@ -322,7 +334,6 @@ def probe_accuracy_by_phenomenon(
             result[phenom] = {**c, "accuracy": c["correct"] / c["total"]}
     return result
 
-
 def save_probes_as_tsv(output_path: Path) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -333,7 +344,6 @@ def save_probes_as_tsv(output_path: Path) -> None:
             minimal = probe.minimal_pair or ""
             f.write(f"{probe.text}\t{probe.expected_label}\t{probe.phenomenon}\t"
                     f"{tokens_str}\t{probe.description}\t{minimal}\n")
-
 
 def save_probes_as_json(output_path: Path) -> None:
     output_path = Path(output_path)
@@ -353,7 +363,6 @@ def probe_set_summary() -> dict:
         "by_label": dict(by_label),
         "with_minimal_pair": has_pair,
     }
-
 
 if __name__ == "__main__":
     import pprint
