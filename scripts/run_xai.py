@@ -1543,6 +1543,34 @@ def run_stability_analysis():
               f"{row['mean_rho']:6.3f} [{row['ci95_lo_rho']:.3f},{row['ci95_hi_rho']:.3f}]  "
               f"{row['mean_j5']:5.3f}  {row['effect_size_r']:5.3f}  {sig}")
 
+    compute_power_analysis()
+
+def compute_power_analysis():
+    import math
+    per_path = _RES_DIR / "stability_perSample.csv"
+    if not per_path.exists():
+        print("  [WARN] stability_perSample.csv not found. Run Stability Analysis first.")
+        return
+
+    df = pd.read_csv(per_path)
+    # Z_alpha/2 (0.05 two-tailed) + Z_beta (0.80 power) = 1.960 + 0.842 = 2.802
+    # one-sided Wilcoxon-equivalent: Z_0.05 + Z_0.20 = 1.645 + 0.842 = 2.487
+    Z = 2.487
+    n = 50
+    power_rows = []
+    print(f"\n  Power analysis (alpha=0.05, power=0.80, n={n}):")
+    print(f"  {'method':5s}  {'observed_sd':>11s}  {'min_detectable_delta_rho':>24s}")
+    for method, grp in df.groupby("method"):
+        sd = float(grp["spearman_rho"].dropna().std())
+        delta = Z * sd / math.sqrt(n)
+        power_rows.append({"method": method, "observed_sd": round(sd, 4),
+                            "min_detectable_delta_rho": round(delta, 4)})
+        print(f"  {method:5s}  {sd:11.4f}  {delta:24.4f}")
+
+    out_path = _RES_DIR / "power_analysis.csv"
+    pd.DataFrame(power_rows).to_csv(out_path, index=False, encoding="utf-8")
+    print(f"  Saved -> {out_path}")
+
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  XAI ANALYSIS RUNNER")
