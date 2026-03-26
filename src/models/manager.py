@@ -47,15 +47,17 @@ class ModelManager:
     @staticmethod
     def _load_model_from_local_dir(model_dir: Path):
         base_model_id = ModelManager._infer_base_model_id(model_dir)
-        weight_candidates = [
+        hf_weight_candidates = [
             model_dir / "model.safetensors",
             model_dir / "pytorch_model.bin",
+        ]
+        weight_candidates = hf_weight_candidates + [
             model_dir / "qat_state_dict.pt",
         ]
-        has_weights = any(path.exists() for path in weight_candidates)
+        has_hf_weights = any(path.exists() for path in hf_weight_candidates)
         has_config = (model_dir / "config.json").exists()
 
-        if has_weights and has_config:
+        if has_hf_weights and has_config:
             return AutoModelForSequenceClassification.from_pretrained(
                 str(model_dir),
                 num_labels=len(LABELS),
