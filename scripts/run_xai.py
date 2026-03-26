@@ -1128,7 +1128,6 @@ def run_occlusion_attribution():
     print(f"  {global_done}/{total_expected} files saved to {_OUT_DIR}")
     print(f"  File pattern: occ_{{variant}}_{{sample_id}}.npy")
 
-
 def run_ste_calibration():
     import pandas as pd
     from scipy.stats import spearmanr
@@ -1253,6 +1252,131 @@ def run_random_baselines():
     print(f"\n  Random baselines complete: {n_done}/{n_total} files saved  skipped={n_skipped}")
     print(f"  File pattern: random_{{sample_id}}_{{run}}.npy")
 
+def run_cross_seed_verification():
+    import pandas as pd
+    import onnxruntime as ort
+    from scipy.stats import spearmanr
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
+    _MODELS_DIR    = _PROJECT_ROOT / "models"
+    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
+    _RES_DIR       = _PROJECT_ROOT / "results"
+    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not _SUBSAMPLE_CSV.exists():
+        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
+        return
+    df_sub  = pd.read_csv(_SUBSAMPLE_CSV)
+    samples = [
+        {"sample_id": int(row["sample_id"]), "text": row["text"]}
+        for _, row in df_sub.iterrows()
+    ][:20]
+    print(f"\n  Cross-seed verification: {len(samples)} samples, seeds [42, 123, 456]")
+
+    all_rows = []
+
+    for seed in [42, 123, 456]:
+        print(f"\n  [{seed}]  loading models...")
+
+        fp32_model = ModelManager.load_model(str(_MODELS_DIR / f"fp32_seed{seed}"))
+        fp32_model.model.eval()
+
+        ptq_q = PTQQuantizer(fp32_model.model)
+        ptq_m, _ = ptq_q.quantize_int4()
+        ptq_model = BaseModel(ptq_m, fp32_model.tokenizer, device=fp32_model.device)
+
+        onnx_file = _MODELS_DIR / f"qat_onnx_int4_seed{seed}" / "model_qat_int4.onnx"
+        if not onnx_file.exists():
+            print(f"  [SKIP] {onnx_file} not found")
+            qat_model = None
+        else:
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+            opts.log_severity_level = 3
+            session = ort.InferenceSession(
+                str(onnx_file), opts, providers=["CPUExecutionProvider"]
+            )
+            qat_model = OnnxBaseModel(session, fp32_model.tokenizer, None, torch.device("cpu"))
+
+        fp32_occ = OcclusionExplainer(fp32_model, LABELS, use_fp16=False)
+        ptq_occ  = OcclusionExplainer(ptq_model,  LABELS, use_fp16=False)
+        qat_occ  = OcclusionExplainer(qat_model,  LABELS, use_fp16=False) if qat_model else None
+
+        for sample in samples:
+            sid  = sample["sample_id"]
+            text = sample["text"]
+
+            sfx = "" if seed == 42 else f"_s{seed}"
+            fp32_path = _OUT_DIR / f"occ_fp32{sfx}_{sid}.npy"
+            ptq_path  = _OUT_DIR / f"occ_ptq_int4{sfx}_{sid}.npy"
+            qat_path  = _OUT_DIR / f"occ_qat_onnx_int4{sfx}_{sid}.npy"
+
+            if not fp32_path.exists():
+                r = fp32_occ.explain(text, window_size=1)
+                np.save(fp32_path, np.array([s for _, s in r["all_tokens_ordered"]], dtype=np.float32))
+            if not ptq_path.exists():
+                r = ptq_occ.explain(text, window_size=1)
+                np.save(ptq_path,  np.array([s for _, s in r["all_tokens_ordered"]], dtype=np.float32))
+            if qat_occ and not qat_path.exists():
+                r = qat_occ.explain(text, window_size=1)
+                np.save(qat_path,  np.array([s for _, s in r["all_tokens_ordered"]], dtype=np.float32))
+
+            if not fp32_path.exists():
+                print(f"  [SKIP] sid={sid} seed={seed}: fp32 missing")
+                continue
+
+            fp32_s = np.load(fp32_path).astype(np.float64)
+
+            if ptq_path.exists():
+                ptq_s = np.load(ptq_path).astype(np.float64)
+                L = min(len(fp32_s), len(ptq_s))
+                rho, _ = spearmanr(fp32_s[:L], ptq_s[:L])
+                all_rows.append({"seed": seed, "sample_id": sid,
+                                  "comparison": "fp32_vs_ptq_int4", "spearman_rho": float(rho)})
+
+            if qat_path.exists():
+                qat_s = np.load(qat_path).astype(np.float64)
+                L = min(len(fp32_s), len(qat_s))
+                rho, _ = spearmanr(fp32_s[:L], qat_s[:L])
+                all_rows.append({"seed": seed, "sample_id": sid,
+                                  "comparison": "fp32_vs_qat_onnx_int4", "spearman_rho": float(rho)})
+
+        n_seed = len([r for r in all_rows if r["seed"] == seed])
+        print(f"  seed={seed}: {n_seed} correlation rows computed")
+
+    if not all_rows:
+        print("  [WARN] No rows computed.")
+        return
+
+    df = pd.DataFrame(all_rows)
+    per_path = _RES_DIR / "cross_seed_verification.csv"
+    df.to_csv(per_path, index=False, encoding="utf-8")
+    print(f"\n  Saved {len(df)} rows -> {per_path}")
+
+    seed42_means = {
+        cmp: df[(df["seed"] == 42) & (df["comparison"] == cmp)]["spearman_rho"].mean()
+        for cmp in df["comparison"].unique()
+    }
+    summary_rows = []
+    for (cmp, seed), grp in df.groupby(["comparison", "seed"]):
+        mean_rho = grp["spearman_rho"].mean()
+        std_rho  = grp["spearman_rho"].std()
+        ref      = seed42_means.get(cmp, float("nan"))
+        delta    = abs(mean_rho - ref)
+        verdict  = "CONSISTENT" if delta <= 0.10 else "VARIABLE"
+        summary_rows.append({"comparison": cmp, "seed": seed,
+                              "mean_rho": round(mean_rho, 4), "std_rho": round(std_rho, 4),
+                              "delta_vs_seed42": round(delta, 4), "verdict": verdict})
+
+    df_sum = pd.DataFrame(summary_rows)
+    sum_path = _RES_DIR / "cross_seed_summary.csv"
+    df_sum.to_csv(sum_path, index=False, encoding="utf-8")
+    print(f"  Saved summary -> {sum_path}\n")
+    for _, row in df_sum.iterrows():
+        print(f"  {row['comparison']:30s}  seed={row['seed']}  "
+              f"mean_rho={row['mean_rho']:.3f}  delta={row['delta_vs_seed42']:.3f}  -> {row['verdict']}")
+
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  XAI ANALYSIS RUNNER")
@@ -1267,8 +1391,9 @@ def interactive_menu():
     print("  [6] Occlusion Attribution (all 8 seed-42 variants, window=1, resumable)")
     print("  [7] STE Calibration (Spearman: ig_qat_ste vs occ_qat_onnx_int8/int4, first 20 samples)")
     print("  [8] Random Baselines (30 draws x 50 samples, sigma from fp32 attributions)")
+    print("  [9] Cross-seed Verification (Occlusion seeds 123/456 vs 42, first 20 samples)")
 
-    method_choice = input("\n  Enter choice (1-8): ").strip()
+    method_choice = input("\n  Enter choice (1-9): ").strip()
 
     if method_choice == "2":
         return _qat_menu()
@@ -1290,6 +1415,9 @@ def interactive_menu():
 
     if method_choice == "8":
         return "rand_base", [], 50, None
+
+    if method_choice == "9":
+        return "cross_seed", [], 20, None
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
