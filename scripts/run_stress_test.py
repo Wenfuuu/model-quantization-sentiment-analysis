@@ -6,7 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import EXPERIMENT_CONFIGS, LABELS, DEVICE
+from src.config import EXPERIMENT_CONFIGS, LABELS, DEVICE, TRAINING_SEEDS, SEEDED_MODEL_DIRS
+from scipy.stats import binom as _binom
 from src.data import load_smsa_dataset, load_tweets_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
@@ -172,86 +173,119 @@ def run_stress_test_experiment(version_key, tests=None):
         probe_samples = get_probe_samples(include_minimal_pairs=True)
         primary_samples = get_probe_samples(include_minimal_pairs=False)
 
-        probe_results = {}
-        for precision, model in models.items():
-            use_fp16 = use_fp16_map.get(precision, False)
-            preds_primary = []
-            preds_pairs = []
+        _all_seed_results = {}
+        _rows_pred, _rows_psr = [], []
 
-            for i, sample in enumerate(primary_samples):
-                pred = model.predict(sample["text"], use_fp16=use_fp16)
-                preds_primary.append({
-                    "predicted": pred["label"],
-                    "expected": sample["expected"],
-                    "confidence": pred["confidence"],
-                    "phenomenon": sample["meta"]["phenomenon"],
-                    "phenomenon_tokens": sample["meta"]["phenomenon_tokens"],
-                    "text": sample["text"],
-                })
+        for _seed in TRAINING_SEEDS:
+            _seed_base = ModelManager.load_model(str(SEEDED_MODEL_DIRS[_seed]), device=torch.device("cpu"))
+            _seed_models, _seed_fp16_map = _build_models(_seed_base)
 
-            direction_aware = []
-            for probe, pred in zip(probes, preds_primary):
-                if probe.minimal_pair is None:
-                    direction_aware.append(None)
-                    continue
-                pair_pred = model.predict(probe.minimal_pair, use_fp16=use_fp16)
-                original_label = pred["predicted"]
-                pair_label = pair_pred["label"]
-                flipped = original_label != pair_label
-                correct_direction = pair_label == probe.expected_label
-                direction_aware.append({
-                    "original_pred": original_label,
-                    "pair_pred": pair_label,
-                    "flipped": flipped,
-                    "correct_direction": correct_direction,
-                    "minimal_pair_text": probe.minimal_pair,
-                })
+            probe_results = {}
+            for precision, model in _seed_models.items():
+                use_fp16 = _seed_fp16_map.get(precision, False)
+                preds_primary = []
+                preds_pairs = []
 
-            by_phenomenon = probe_accuracy_by_phenomenon(preds_primary, probes)
+                for i, sample in enumerate(primary_samples):
+                    pred = model.predict(sample["text"], use_fp16=use_fp16)
+                    preds_primary.append({
+                        "predicted": pred["label"],
+                        "expected": sample["expected"],
+                        "confidence": pred["confidence"],
+                        "phenomenon": sample["meta"]["phenomenon"],
+                        "phenomenon_tokens": sample["meta"]["phenomenon_tokens"],
+                        "text": sample["text"],
+                    })
 
-            dir_psr = {}
-            for phenom in by_phenomenon:
-                entries = [
-                    d for d, p in zip(direction_aware, probes)
-                    if p.phenomenon == phenom and d is not None
-                ]
-                if entries:
-                    n_flipped_correct = sum(1 for e in entries if e["correct_direction"])
-                    dir_psr[phenom] = {
-                        "n_with_pair": len(entries),
-                        "n_correct_direction": n_flipped_correct,
-                        "direction_psr": n_flipped_correct / len(entries),
-                    }
+                direction_aware = []
+                for probe, pred in zip(probes, preds_primary):
+                    if probe.minimal_pair is None:
+                        direction_aware.append(None)
+                        continue
+                    pair_pred = model.predict(probe.minimal_pair, use_fp16=use_fp16)
+                    original_label = pred["predicted"]
+                    pair_label = pair_pred["label"]
+                    flipped = original_label != pair_label
+                    correct_direction = pair_label == (probe.expected_direction or probe.expected_label)
+                    direction_aware.append({
+                        "original_pred": original_label,
+                        "pair_pred": pair_label,
+                        "flipped": flipped,
+                        "correct_direction": correct_direction,
+                        "minimal_pair_text": probe.minimal_pair,
+                    })
 
-            probe_results[precision] = {
-                "by_phenomenon": by_phenomenon,
-                "direction_aware_psr": dir_psr,
-                "raw_predictions": preds_primary,
-            }
+                by_phenomenon = probe_accuracy_by_phenomenon(preds_primary, probes)
 
-        phenomena = list(probe_results[list(models.keys())[0]]["by_phenomenon"].keys())
-        for phenom in phenomena:
-            print(f"\n  [{phenom}]")
-            for p in models:
-                ph = probe_results[p]["by_phenomenon"].get(phenom, {})
-                acc = ph.get("accuracy", float("nan"))
-                total = ph.get("total", 0)
-                dir_ph = probe_results[p]["direction_aware_psr"].get(phenom, {})
-                dir_psr_val = dir_ph.get("direction_psr", float("nan"))
-                print(f"    {p.upper()}: acc={acc:.2f} ({ph.get('correct',0)}/{total})  "
-                      f"dir-PSR={dir_psr_val:.2f}")
+                dir_psr = {}
+                for phenom in by_phenomenon:
+                    entries = [
+                        d for d, p in zip(direction_aware, probes)
+                        if p.phenomenon == phenom and d is not None
+                    ]
+                    if entries:
+                        n_flipped_correct = sum(1 for e in entries if e["correct_direction"])
+                        dir_psr[phenom] = {
+                            "n_with_pair": len(entries),
+                            "n_correct_direction": n_flipped_correct,
+                            "direction_psr": n_flipped_correct / len(entries),
+                        }
 
-        probe_out = output_dir / "linguistic_probe_results.json"
-        with open(probe_out, "w", encoding="utf-8") as f:
-            json.dump(probe_results, f, ensure_ascii=False, indent=2)
-        print(f"\n  Saved: {probe_out}")
-        all_results["linguistic_probes"] = probe_results
+                _all_dir = [d for d in direction_aware if d is not None]
+                _n_correct_dir = sum(1 for d in _all_dir if d["correct_direction"])
+                _n_probes = len(probes)
+                _g_psr = _n_correct_dir / _n_probes if _n_probes else float("nan")
+                _ci = _binom.interval(0.95, _n_probes, max(0.0, min(1.0, _g_psr)))
+                _ci_low, _ci_high = _ci[0] / _n_probes, _ci[1] / _n_probes
+
+                probe_results[precision] = {
+                    "by_phenomenon": by_phenomenon,
+                    "direction_aware_psr": dir_psr,
+                    "raw_predictions": preds_primary,
+                    "global_direction_psr": _g_psr,
+                    "ci_low": _ci_low,
+                    "ci_high": _ci_high,
+                }
+                _rows_psr.append({"seed": _seed, "precision": precision,
+                                   "direction_psr": _g_psr, "ci_low": _ci_low, "ci_high": _ci_high})
+                for _pr in preds_primary:
+                    _rows_pred.append({**_pr, "seed": _seed, "precision": precision})
+
+            phenomena = list(probe_results[list(_seed_models.keys())[0]]["by_phenomenon"].keys())
+            print(f"\n  [seed={_seed}]")
+            for phenom in phenomena:
+                print(f"\n  [{phenom}]")
+                for p in _seed_models:
+                    ph = probe_results[p]["by_phenomenon"].get(phenom, {})
+                    acc = ph.get("accuracy", float("nan"))
+                    total = ph.get("total", 0)
+                    dir_ph = probe_results[p]["direction_aware_psr"].get(phenom, {})
+                    dir_psr_val = dir_ph.get("direction_psr", float("nan"))
+                    print(f"    {p.upper()}: acc={acc:.2f} ({ph.get('correct',0)}/{total})  "
+                          f"dir-PSR={dir_psr_val:.2f}")
+
+            probe_out = output_dir / f"linguistic_probe_results_seed{_seed}.json"
+            with open(probe_out, "w", encoding="utf-8") as f:
+                json.dump(probe_results, f, ensure_ascii=False, indent=2)
+            print(f"\n  Saved: {probe_out}")
+            _all_seed_results[_seed] = probe_results
+
+        import pandas as pd
+        _res_dir = Path(__file__).resolve().parent.parent / "results"
+        _res_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(_rows_pred).to_csv(_res_dir / "probe_predictions_allseeds.csv", index=False)
+        pd.DataFrame(_rows_psr).to_csv(_res_dir / "probe_psr_perseed.csv", index=False)
+        _df_psr = pd.DataFrame(_rows_psr)
+        _summary = _df_psr.groupby("precision")["direction_psr"].agg(mean="mean", std="std").reset_index()
+        _ci_means = _df_psr.groupby("precision")[["ci_low", "ci_high"]].mean().reset_index()
+        _summary.merge(_ci_means, on="precision").to_csv(_res_dir / "probe_psr_summary.csv", index=False)
+        print(f"\n  Saved probe CSVs to {_res_dir}")
+        all_results["linguistic_probes"] = _all_seed_results
 
     print_section("STRESS TEST COMPLETED")
     print(f"All results saved to: {output_dir}")
 
     return all_results
-
 
 def interactive_menu():
     print("\n" + "=" * 60)
