@@ -283,7 +283,7 @@ class FaithfulnessEvaluator:
                     predicted_class, self.device,
                 )
 
-            suff_val = float("nan") if np.isnan(suff_conf) else max(0.0, orig_confidence - suff_conf)
+            suff_val = suff_conf
             comp_val = float("nan") if np.isnan(comp_conf) else (orig_confidence - comp_conf)
 
             per_k[k] = FaithfulnessAtK(

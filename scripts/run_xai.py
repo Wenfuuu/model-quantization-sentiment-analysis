@@ -316,6 +316,28 @@ class OnnxBaseModel:
             "inference_time": end_time - start_time,
         }
 
+class _OnnxTorchAdapter:
+    """Duck-types OnnxBaseModel as a minimal HF PyTorch model for FaithfulnessEvaluator."""
+    def __init__(self, onnx_model: OnnxBaseModel):
+        self._session = onnx_model.session
+        self.training = False
+
+    def parameters(self):
+        yield torch.zeros(1, device="cpu")
+
+    def eval(self):  self.training = False; return self
+    def train(self): self.training = True;  return self
+
+    def __call__(self, **kwargs):
+        ids  = kwargs["input_ids"].cpu().numpy().astype(np.int64)
+        mask = kwargs["attention_mask"].cpu().numpy().astype(np.int64)
+        logits_np = self._session.run(None, {"input_ids": ids, "attention_mask": mask})[0]
+        class _R: logits = None
+        r = _R()
+        r.logits = torch.tensor(logits_np, dtype=torch.float32)
+        return r
+
+
 def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
     lime_explainer = LIMEExplainer(base_model, LABELS, use_fp16=use_fp16)
     shap_explainer = SHAPExplainer(base_model, LABELS, use_fp16=use_fp16)
@@ -1545,6 +1567,138 @@ def run_stability_analysis():
 
     compute_power_analysis()
 
+def run_faithfulness_evaluation():
+    import pandas as pd
+    from src.evaluation.faithfulness import FaithfulnessEvaluator
+
+    _PROJECT_ROOT  = Path(__file__).resolve().parent.parent
+    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
+    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
+    _RES_DIR       = _PROJECT_ROOT / "results"
+    _FP32_DIR      = _PROJECT_ROOT / "models" / "fp32_seed42"
+    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / "qat_seed42_clean"
+    _MODELS_DIR    = _PROJECT_ROOT / "models"
+
+    if not _SUBSAMPLE_CSV.exists():
+        print(f"  [ERROR] Subsample not found: {_SUBSAMPLE_CSV}")
+        return
+    df_sub  = pd.read_csv(_SUBSAMPLE_CSV)
+    samples = list(df_sub.itertuples(index=False))
+
+    print(f"\n  Loading FP32 base: {_FP32_DIR}")
+    fp32_base = ModelManager.load_model(str(_FP32_DIR))
+    fp32_base.model.eval()
+
+    def _load_onnx(variant):
+        import onnxruntime as ort
+        onnx_dir  = _MODELS_DIR / f"qat_onnx_{variant}_seed42"
+        onnx_file = onnx_dir / f"model_qat_{variant}.onnx"
+        if not onnx_file.exists():
+            return None
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        opts.log_severity_level = 3
+        session = ort.InferenceSession(str(onnx_file), opts, providers=["CPUExecutionProvider"])
+        return OnnxBaseModel(session, fp32_base.tokenizer, None, torch.device("cpu"))
+
+    def _build_ptq(precision):
+        ptq = PTQQuantizer(fp32_base.model)
+        m, _ = getattr(ptq, f"quantize_{precision}")()
+        return BaseModel(m, fp32_base.tokenizer, device=fp32_base.device)
+
+    VARIANTS = [
+        ("fp32",          lambda: fp32_base,           False),
+        ("ptq_fp16",      lambda: _build_ptq("fp16"),  True),
+        ("ptq_int8",      lambda: _build_ptq("int8"),  False),
+        ("ptq_int4",      lambda: _build_ptq("int4"),  False),
+        ("qat_fp32",      lambda: (ModelManager.load_model(str(_QAT_CLEAN_DIR))
+                                   if _QAT_CLEAN_DIR.exists() else None), False),
+        ("qat_onnx_fp16", lambda: _load_onnx("fp16"), True),
+        ("qat_onnx_int8", lambda: _load_onnx("int8"), False),
+        ("qat_onnx_int4", lambda: _load_onnx("int4"), False),
+    ]
+
+    METHODS = ["lime", "occ", "shap"]
+    per_rows = []
+
+    for method in METHODS:
+        for vname, load_fn, _ in VARIANTS:
+            model = load_fn()
+            if model is None:
+                print(f"  [SKIP] {method} x {vname}")
+                continue
+
+            if isinstance(model, OnnxBaseModel):
+                infer_model = _OnnxTorchAdapter(model)
+                device = torch.device("cpu")
+            else:
+                infer_model = model.model
+                device = model.device
+
+            evaluator = FaithfulnessEvaluator(
+                infer_model, fp32_base.tokenizer, device=device, k_values=(5,)
+            )
+
+            n_found = 0
+            for sample in samples:
+                sid  = int(sample.sample_id)
+                text = sample.text
+                npy_path = _OUT_DIR / f"{method}_{vname}_{sid}.npy"
+                if not npy_path.exists():
+                    continue
+                words  = text.split()
+                scores = np.load(npy_path).astype(np.float64)
+                L = min(len(words), len(scores))
+                if L < 1:
+                    continue
+                try:
+                    result = evaluator.evaluate(
+                        text, words[:L], scores[:L].tolist(),
+                        method=method, precision=vname, token_level="word",
+                    )
+                    fk = result.per_k[5]
+                    per_rows.append({
+                        "method": method, "variant": vname, "sample_id": sid,
+                        "orig_conf": round(fk.original_confidence, 4),
+                        "suff":      fk.sufficiency       if not np.isnan(fk.sufficiency)       else float("nan"),
+                        "comp":      fk.comprehensiveness if not np.isnan(fk.comprehensiveness) else float("nan"),
+                        "n_content": fk.n_content_tokens,
+                        "k":         fk.k,
+                    })
+                    n_found += 1
+                except Exception as exc:
+                    print(f"  [ERR] {method} {vname} sid={sid}: {exc}")
+
+            print(f"  {method:5s} x {vname:20s}: {n_found} samples")
+
+    if not per_rows:
+        print("  [WARN] No .npy files found. Run LIME/OCC/SHAP steps first.")
+        return
+
+    df_per = pd.DataFrame(per_rows)
+    per_path = _RES_DIR / "faithfulness_perSample.csv"
+    df_per.to_csv(per_path, index=False, encoding="utf-8")
+    print(f"\n  Saved {len(df_per)} rows -> {per_path}")
+
+    sum_rows = []
+    for (method, vname), grp in df_per.groupby(["method", "variant"]):
+        sum_rows.append({
+            "method": method, "variant": vname, "n": len(grp),
+            "mean_suff": round(float(grp["suff"].dropna().mean()), 4),
+            "std_suff":  round(float(grp["suff"].dropna().std()),  4),
+            "mean_comp": round(float(grp["comp"].dropna().mean()), 4),
+            "std_comp":  round(float(grp["comp"].dropna().std()),  4),
+        })
+    df_sum = pd.DataFrame(sum_rows)
+    sum_path = _RES_DIR / "faithfulness_summary.csv"
+    df_sum.to_csv(sum_path, index=False, encoding="utf-8")
+    print(f"  Saved summary -> {sum_path}")
+
+    print(f"\n  {'method':5s}  {'variant':20s}  {'mean_suff':>9s}  {'mean_comp':>9s}")
+    for _, row in df_sum.sort_values(["method", "variant"]).iterrows():
+        print(f"  {row['method']:5s}  {row['variant']:20s}  "
+              f"{row['mean_suff']:9.4f}  {row['mean_comp']:9.4f}")
+
 def compute_power_analysis():
     import math
     per_path = _RES_DIR / "stability_perSample.csv"
@@ -1587,8 +1741,9 @@ def interactive_menu():
     print("  [8] Random Baselines (30 draws x 50 samples, sigma from fp32 attributions)")
     print("  [9] Cross-seed Verification (Occlusion seeds 123/456 vs 42, first 20 samples)")
     print("  [10] Stability Analysis (FP32 vs 7 variants, Spearman+Jaccard+Bootstrap+Bonferroni)")
+    print("  [11] Faithfulness Evaluation (Suff+Comp k=5, all 8 variants x LIME/OCC/SHAP)")
 
-    method_choice = input("\n  Enter choice (1-10): ").strip()
+    method_choice = input("\n  Enter choice (1-11): ").strip()
 
     if method_choice == "2":
         return _qat_menu()
@@ -1616,6 +1771,9 @@ def interactive_menu():
 
     if method_choice == "10":
         return "stability", [], 50, None
+
+    if method_choice == "11":
+        return "faithfulness", [], 50, None
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
