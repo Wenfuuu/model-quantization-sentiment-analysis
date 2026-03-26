@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import warnings
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -239,7 +240,6 @@ def save_baseline_floors(
     with open(output_path, "w", encoding="utf-8") as f:
         _json.dump(payload, f, indent=2, ensure_ascii=False)
 
-
 def load_baseline_floors(
     path: _Path,
 ) -> Tuple[List[Dict[str, Dict[str, float]]], dict]:
@@ -251,3 +251,61 @@ def load_baseline_floors(
     with open(path, "r", encoding="utf-8") as f:
         payload = _json.load(f)
     return payload["floors"], payload.get("metadata", {})
+
+def run_random_baselines():
+    import pandas as pd
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
+    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
+    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not _SUBSAMPLE_CSV.exists():
+        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
+        return
+    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
+    samples = [(int(row["sample_id"]), row["text"]) for _, row in df_sub.iterrows()]
+
+    baseline  = RandomAttributionBaseline(baseline_seed=42, n_draws=30)
+    n_draws   = baseline.n_draws
+    n_total   = len(samples) * n_draws
+    n_done    = 0
+    n_skipped = 0
+
+    print(f"\n  Random Baselines: {len(samples)} samples x {n_draws} draws = {n_total} files")
+    print(f"  sigma source priority: ig_fp32 > occ_fp32 > shap_fp32")
+    print(f"  Output: {_OUT_DIR}")
+
+    for sid, text in samples:
+        sigma_source = None
+        for prefix in ("ig_fp32", "occ_fp32", "shap_fp32"):
+            p = _OUT_DIR / f"{prefix}_{sid}.npy"
+            if p.exists():
+                sigma_source = p
+                break
+
+        if sigma_source is None:
+            print(f"  [SKIP] sid={sid}: no sigma source (ig_fp32/occ_fp32/shap_fp32)")
+            n_skipped += n_draws
+            continue
+
+        real_scores = np.load(sigma_source).astype(np.float64)
+        words = text.split()
+        L = min(len(words), len(real_scores))
+        real_scores = real_scores[:L]
+        words_trimmed = words[:L]
+
+        for i in range(n_draws):
+            out_path = _OUT_DIR / f"random_{sid}_{i}.npy"
+            if out_path.exists():
+                n_done += 1
+                continue
+            result = baseline.draw(text, words_trimmed, real_scores, i)
+            np.save(out_path, result.scores.astype(np.float32))
+            n_done += 1
+
+        if n_done % 500 == 0 or n_done + n_skipped == n_total:
+            print(f"  [progress] {n_done}/{n_total}  skipped={n_skipped}")
+
+    print(f"\n  Random baselines complete: {n_done}/{n_total} files saved  skipped={n_skipped}")
+    print(f"  File pattern: random_{{sample_id}}_{{run}}.npy")

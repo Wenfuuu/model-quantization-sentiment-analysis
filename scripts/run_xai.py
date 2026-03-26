@@ -37,6 +37,15 @@ from src.xai import (
     layer_cls_similarity,
 )
 from src.utils import print_section, set_seed
+from src.models.base import OnnxBaseModel
+from src.xai.ig_metrics import run_ste_ig_analysis
+from src.xai.lime_explainer import run_lime_attribution
+from src.xai.shap_explainer import run_shap_attribution
+from src.xai.occlusion import run_occlusion_attribution, run_cross_seed_verification
+from src.xai.random_baseline import run_random_baselines
+from src.evaluation.calibration import run_ste_calibration
+from src.evaluation.explanation_drift import run_stability_analysis, compute_power_analysis, compute_cross_method_agreement
+from src.evaluation.faithfulness import run_faithfulness_evaluation
 
 warnings.filterwarnings('ignore')
 
@@ -279,65 +288,6 @@ def generate_qat_divergences(experiment_key):
 
     return divergence_data
 
-class OnnxBaseModel:
-    def __init__(self, session, tokenizer, hf_model, device):
-        self.session = session
-        self.tokenizer = tokenizer
-        self.model = hf_model
-        self.device = device
-
-    def predict(self, text, use_fp16=False):
-        text = text.lower().strip()
-        enc = self.tokenizer(
-            text,
-            truncation=True,
-            padding="max_length",
-            max_length=128,
-            return_tensors="np",
-        )
-        input_ids = enc["input_ids"].astype(np.int64)
-        attention_mask = enc["attention_mask"].astype(np.int64)
-
-        start_time = time.perf_counter()
-        logits = self.session.run(
-            None,
-            {"input_ids": input_ids, "attention_mask": attention_mask},
-        )[0]
-        end_time = time.perf_counter()
-
-        probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
-        pred_idx = int(np.argmax(logits, axis=1)[0])
-
-        return {
-            "label": LABELS[pred_idx],
-            "class_id": pred_idx,
-            "confidence": float(probs[0, pred_idx]),
-            "probabilities": {LABELS[i]: float(probs[0, i]) for i in range(len(LABELS))},
-            "inference_time": end_time - start_time,
-        }
-
-class _OnnxTorchAdapter:
-    """Duck-types OnnxBaseModel as a minimal HF PyTorch model for FaithfulnessEvaluator."""
-    def __init__(self, onnx_model: OnnxBaseModel):
-        self._session = onnx_model.session
-        self.training = False
-
-    def parameters(self):
-        yield torch.zeros(1, device="cpu")
-
-    def eval(self):  self.training = False; return self
-    def train(self): self.training = True;  return self
-
-    def __call__(self, **kwargs):
-        ids  = kwargs["input_ids"].cpu().numpy().astype(np.int64)
-        mask = kwargs["attention_mask"].cpu().numpy().astype(np.int64)
-        logits_np = self._session.run(None, {"input_ids": ids, "attention_mask": mask})[0]
-        class _R: logits = None
-        r = _R()
-        r.logits = torch.tensor(logits_np, dtype=torch.float32)
-        return r
-
-
 def collect_xai_results(base_model, precision_name, samples, use_fp16=False):
     lime_explainer = LIMEExplainer(base_model, LABELS, use_fp16=use_fp16)
     shap_explainer = SHAPExplainer(base_model, LABELS, use_fp16=use_fp16)
@@ -506,7 +456,6 @@ def generate_shap_comparison(all_shap, samples, precisions, output_dir):
         plt.close()
         print(f"  Saved: {path}")
 
-
 def generate_ig_comparison(all_ig, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -558,7 +507,6 @@ def generate_ig_comparison(all_ig, samples, precisions, output_dir):
         plt.close()
         print(f"  Saved: {path}")
 
-
 def generate_occlusion_comparison(all_occ, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -596,7 +544,6 @@ def generate_occlusion_comparison(all_occ, samples, precisions, output_dir):
         plt.savefig(str(path), dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  Saved: {path}")
-
 
 def generate_prediction_summary(all_lime, samples, precisions, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -639,1092 +586,6 @@ def generate_prediction_summary(all_lime, samples, precisions, output_dir):
     plt.close()
     print(f"  Saved: {path}")
 
-
-def run_ste_ig_analysis():
-    import pandas as pd
-
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _FP32_DIR = _PROJECT_ROOT / "models" / "fp32_seed42"
-    _QAT_DIR = _PROJECT_ROOT / "models" / "qat_seed42_with_observers"
-    _OUT_DIR = _PROJECT_ROOT / "results" / "attributions"
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
-        print("  Run: python scripts/prepare_datasets.py  (requires models/fp32_seed42/predictions.csv)")
-        return
-    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = [
-        {"sample_id": int(row["sample_id"]), "text": row["text"],
-         "expected": _INT2LABEL[int(row["true_label"])]}
-        for _, row in df_sub.iterrows()
-    ]
-    print(f"\n  Loaded {len(samples)} samples from {_SUBSAMPLE_CSV.name}")
-
-    print(f"\n  Loading FP32 model: {_FP32_DIR}")
-    fp32_model = ModelManager.load_model(str(_FP32_DIR))
-    fp32_model.model.eval()
-
-    if not _QAT_DIR.exists():
-        print(f"  [ERROR] QAT model directory not found: {_QAT_DIR}")
-        print("  Run QAT training first (multiseed_qat saves qat_seed42_with_observers/).")
-        return
-    print(f"\n  Loading QAT model: {_QAT_DIR}")
-    qat_model = ModelManager.load_model(str(_QAT_DIR))
-    qat_model.model.eval()
-
-    print("\n  Verifying fake quantizers in QAT model:")
-    observer_names = [
-        name for name, mod in qat_model.model.named_modules()
-        if "FakeQuantize" in type(mod).__name__ or "Observer" in type(mod).__name__
-    ]
-    if observer_names:
-        print(f"  Found {len(observer_names)} observer/fake-quantizer module(s):")
-        for n in observer_names[:10]:
-            print(f"    {n}")
-        if len(observer_names) > 10:
-            print(f"    ... and {len(observer_names) - 10} more")
-    else:
-        print("  [WARN] No FakeQuantize/Observer modules found. Gradients may not flow via STE.")
-
-    tokenizer = fp32_model.tokenizer
-
-    ig_fp32 = IntegratedGradientsExplainer(
-        fp32_model.model, tokenizer, device=fp32_model.device, precision="fp32"
-    )
-    ig_qat = IntegratedGradientsExplainer(
-        qat_model.model, tokenizer, device=qat_model.device, precision="qat_ste"
-    )
-
-    metadata_rows = []
-    example_count = 0
-
-    print(f"\n  Running IG + GxI on {len(samples)} samples (n_steps=30, MEAN aggregation)...\n")
-
-    for idx, sample in enumerate(samples):
-        sid = sample["sample_id"]
-        text = sample["text"]
-        expected = sample["expected"]
-
-        alignment = build_alignment(text, tokenizer)
-
-        res_fp32 = ig_fp32.explain(text, steps=30)
-        words_fp32, ig_word_scores_fp32 = project_subword_to_word(
-            res_fp32["tokens"], res_fp32["scores"], alignment, strategy="mean"
-        )
-
-        res_qat = ig_qat.explain(text, steps=30)
-        _, ig_word_scores_qat = project_subword_to_word(
-            res_qat["tokens"], res_qat["scores"], alignment, strategy="mean"
-        )
-
-        np.save(_OUT_DIR / f"ig_fp32_{sid}.npy", ig_word_scores_fp32)
-        np.save(_OUT_DIR / f"ig_qat_ste_{sid}.npy", ig_word_scores_qat)
-
-        gxi_tokens_fp32, gxi_sw_fp32 = gradient_times_input_tokens(
-            fp32_model.model, tokenizer, text, target=res_fp32["predicted_class"]
-        )
-        _, gxi_word_scores_fp32 = project_subword_to_word(
-            gxi_tokens_fp32, gxi_sw_fp32, alignment, strategy="mean"
-        )
-
-        gxi_tokens_qat, gxi_sw_qat = gradient_times_input_tokens(
-            qat_model.model, tokenizer, text, target=res_qat["predicted_class"]
-        )
-        _, gxi_word_scores_qat = project_subword_to_word(
-            gxi_tokens_qat, gxi_sw_qat, alignment, strategy="mean"
-        )
-
-        np.save(_OUT_DIR / f"gxi_fp32_{sid}.npy", gxi_word_scores_fp32)
-        np.save(_OUT_DIR / f"gxi_qat_ste_{sid}.npy", gxi_word_scores_qat)
-
-        metadata_rows.append({
-            "sample_id": sid,
-            "text": text,
-            "expected": expected,
-            "predicted_fp32": _INT2LABEL.get(res_fp32["predicted_class"], str(res_fp32["predicted_class"])),
-            "predicted_qat_ste": _INT2LABEL.get(res_qat["predicted_class"], str(res_qat["predicted_class"])),
-            "n_words": len(words_fp32),
-            "ig_npy_fp32": f"ig_fp32_{sid}.npy",
-            "ig_npy_qat_ste": f"ig_qat_ste_{sid}.npy",
-            "gxi_npy_fp32": f"gxi_fp32_{sid}.npy",
-            "gxi_npy_qat_ste": f"gxi_qat_ste_{sid}.npy",
-        })
-
-        if example_count < 3:
-            example_count += 1
-            print(f"  ── Example {example_count}: [{expected}] \"{text[:80]}\"")
-            top5 = lambda ws, ss: sorted(zip(ws, ss), key=lambda x: -abs(x[1]))[:5]
-            fmt = lambda pairs: "  ".join(f"{w}({s:+.3f})" for w, s in pairs)
-            print(f"    IG  FP32  top-5: {fmt(top5(words_fp32, ig_word_scores_fp32))}")
-            print(f"    IG  QAT   top-5: {fmt(top5(words_fp32, ig_word_scores_qat))}")
-            print(f"    GxI FP32  top-5: {fmt(top5(words_fp32, gxi_word_scores_fp32))}")
-            print(f"    GxI QAT   top-5: {fmt(top5(words_fp32, gxi_word_scores_qat))}")
-            print()
-
-        if (idx + 1) % 10 == 0:
-            print(f"  [{idx + 1}/{len(samples)}] done")
-
-    meta_path = _OUT_DIR / "ig_metadata.csv"
-    pd.DataFrame(metadata_rows).to_csv(meta_path, index=False, encoding="utf-8")
-    print(f"\n  Saved metadata → {meta_path}")
-    print(f"  Saved {len(metadata_rows)} × 4 .npy files in {_OUT_DIR}")
-    print("  File pattern: ig_fp32_N.npy  ig_qat_ste_N.npy  gxi_fp32_N.npy  gxi_qat_ste_N.npy")
-
-
-def run_lime_attribution():
-    import pandas as pd
-
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _FP32_DIR = _PROJECT_ROOT / "models" / "fp32_seed42"
-    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / "qat_seed42_clean"
-    _MODELS_DIR = _PROJECT_ROOT / "models"
-    _OUT_DIR = _PROJECT_ROOT / "results" / "attributions"
-    _LOG_PATH = _OUT_DIR / "lime_errors.log"
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
-        print("  Run: python scripts/prepare_datasets.py")
-        return
-    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = [
-        {"sample_id": int(row["sample_id"]), "text": row["text"],
-         "expected": _INT2LABEL[int(row["true_label"])]}
-        for _, row in df_sub.iterrows()
-    ]
-    print(f"\n  Loaded {len(samples)} samples from {_SUBSAMPLE_CSV.name}")
-
-    if not _FP32_DIR.exists():
-        print(f"  [ERROR] FP32 model not found: {_FP32_DIR}")
-        return
-    print(f"\n  Loading FP32 base: {_FP32_DIR}")
-    fp32_base = ModelManager.load_model(str(_FP32_DIR))
-    fp32_base.model.eval()
-
-    def _load_onnx(variant):
-        import onnxruntime as ort
-        onnx_dir = _MODELS_DIR / f"qat_onnx_{variant}_seed42"
-        onnx_file = onnx_dir / f"model_qat_{variant}.onnx"
-        if not onnx_file.exists():
-            print(f"  [SKIP] ONNX file not found: {onnx_file}")
-            return None
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
-        opts.log_severity_level = 3
-        session = ort.InferenceSession(
-            str(onnx_file), opts, providers=["CPUExecutionProvider"]
-        )
-        return OnnxBaseModel(session, fp32_base.tokenizer, None, torch.device("cpu"))
-
-    def _build_ptq(precision):
-        ptq = PTQQuantizer(fp32_base.model)
-        m, _ = getattr(ptq, f"quantize_{precision}")()
-        return BaseModel(m, fp32_base.tokenizer, device=fp32_base.device)
-
-    VARIANTS = [
-        ("fp32",          lambda: fp32_base,           False),
-        ("ptq_fp16",      lambda: _build_ptq("fp16"),  True),
-        ("ptq_int8",      lambda: _build_ptq("int8"),  False),
-        ("ptq_int4",      lambda: _build_ptq("int4"),  False),
-        ("qat_fp32",      lambda: (ModelManager.load_model(str(_QAT_CLEAN_DIR))
-                                   if _QAT_CLEAN_DIR.exists() else None), False),
-        ("qat_onnx_fp16", lambda: _load_onnx("fp16"), True),
-        ("qat_onnx_int8", lambda: _load_onnx("int8"), False),
-        ("qat_onnx_int4", lambda: _load_onnx("int4"), False),
-    ]
-
-    n_variants = len(VARIANTS)
-    n_samples  = len(samples)
-    total_expected = n_variants * n_samples
-    global_run = 0
-    global_done = 0
-
-    print(f"\n  Running LIME: {n_variants} variants × {n_samples} samples "
-          f"× 1000 perturbations ≈ {total_expected} total calls")
-    print(f"  Output: {_OUT_DIR}")
-    print(f"  Error log: {_LOG_PATH}")
-
-    for vname, load_fn, use_fp16 in VARIANTS:
-        print(f"\n{'─'*60}")
-        print(f"  [{vname.upper()}]  Loading model...")
-
-        model = load_fn()
-        if model is None:
-            print(f"  [SKIP] {vname} — model or ONNX file not found.")
-            global_run += n_samples
-            continue
-
-        lime_explainer = LIMEExplainer(model, LABELS, use_fp16=use_fp16, random_state=42)
-
-        for sample in samples:
-            global_run += 1
-            sid  = sample["sample_id"]
-            text = sample["text"]
-            out_path = _OUT_DIR / f"lime_{vname}_{sid}.npy"
-
-            if out_path.exists():
-                global_done += 1
-                if global_run % 50 == 0:
-                    print(f"  [progress] {global_run}/{total_expected} "
-                          f"({global_done} saved, {global_run - global_done} skipped/error)")
-                continue
-
-            try:
-                n_words = len(text.split())
-                exp = lime_explainer.explain(
-                    text,
-                    num_features=max(n_words, 10),
-                    num_samples=1000,
-                )
-                pred_idx = int(np.argmax(exp.predict_proba))
-                scores_dict = dict(exp.as_list(label=pred_idx))
-                word_scores = np.array(
-                    [scores_dict.get(w, 0.0) for w in text.split()],
-                    dtype=np.float32,
-                )
-                np.save(out_path, word_scores)
-                global_done += 1
-            except Exception as exc:
-                with open(_LOG_PATH, "a", encoding="utf-8") as _log:
-                    _log.write(f"{vname}\t{sid}\t{type(exc).__name__}: {exc}\n")
-
-            if global_run % 50 == 0:
-                pct = 100 * global_run / total_expected
-                print(f"  [progress] {global_run}/{total_expected} ({pct:.1f}%)  "
-                      f"{global_done} saved  variant={vname}  sample_id={sid}")
-
-    print(f"\n  LIME attribution complete.")
-    print(f"  {global_done}/{total_expected} files saved to {_OUT_DIR}")
-    print(f"  File pattern: lime_{{variant}}_{{sample_id}}.npy")
-
-
-def run_shap_attribution():
-    import pandas as pd
-
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _FP32_DIR = _PROJECT_ROOT / "models" / "fp32_seed42"
-    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / "qat_seed42_clean"
-    _MODELS_DIR = _PROJECT_ROOT / "models"
-    _OUT_DIR = _PROJECT_ROOT / "results" / "attributions"
-    _LOG_PATH = _OUT_DIR / "shap_errors.log"
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
-        print("  Run: python scripts/prepare_datasets.py")
-        return
-    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = [
-        {"sample_id": int(row["sample_id"]), "text": row["text"],
-         "expected": _INT2LABEL[int(row["true_label"])]}
-        for _, row in df_sub.iterrows()
-    ]
-    print(f"\n  Loaded {len(samples)} samples from {_SUBSAMPLE_CSV.name}")
-
-    if not _FP32_DIR.exists():
-        print(f"  [ERROR] FP32 model not found: {_FP32_DIR}")
-        return
-    print(f"\n  Loading FP32 base: {_FP32_DIR}")
-    fp32_base = ModelManager.load_model(str(_FP32_DIR))
-    fp32_base.model.eval()
-
-    def _load_onnx(variant):
-        import onnxruntime as ort
-        onnx_dir = _MODELS_DIR / f"qat_onnx_{variant}_seed42"
-        onnx_file = onnx_dir / f"model_qat_{variant}.onnx"
-        if not onnx_file.exists():
-            print(f"  [SKIP] ONNX file not found: {onnx_file}")
-            return None
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
-        opts.log_severity_level = 3
-        session = ort.InferenceSession(
-            str(onnx_file), opts, providers=["CPUExecutionProvider"]
-        )
-        return OnnxBaseModel(session, fp32_base.tokenizer, None, torch.device("cpu"))
-
-    def _build_ptq(precision):
-        ptq = PTQQuantizer(fp32_base.model)
-        m, _ = getattr(ptq, f"quantize_{precision}")()
-        return BaseModel(m, fp32_base.tokenizer, device=fp32_base.device)
-
-    VARIANTS = [
-        ("fp32",          lambda: fp32_base,           False),
-        ("ptq_fp16",      lambda: _build_ptq("fp16"),  True),
-        ("ptq_int8",      lambda: _build_ptq("int8"),  False),
-        ("ptq_int4",      lambda: _build_ptq("int4"),  False),
-        ("qat_fp32",      lambda: (ModelManager.load_model(str(_QAT_CLEAN_DIR))
-                                   if _QAT_CLEAN_DIR.exists() else None), False),
-        ("qat_onnx_fp16", lambda: _load_onnx("fp16"), True),
-        ("qat_onnx_int8", lambda: _load_onnx("int8"), False),
-        ("qat_onnx_int4", lambda: _load_onnx("int4"), False),
-    ]
-
-    n_variants = len(VARIANTS)
-    n_samples  = len(samples)
-    total_expected = n_variants * n_samples
-    global_run = 0
-    global_done = 0
-
-    print(f"\n  Running SHAP: {n_variants} variants x {n_samples} samples "
-          f"x 500 max_evals ~ {total_expected} total calls")
-    print(f"  Output: {_OUT_DIR}")
-    print(f"  Error log: {_LOG_PATH}")
-
-    for vname, load_fn, use_fp16 in VARIANTS:
-        print(f"\n{'-'*60}")
-        print(f"  [{vname.upper()}]  Loading model...")
-
-        model = load_fn()
-        if model is None:
-            print(f"  [SKIP] {vname} - model or ONNX file not found.")
-            global_run += n_samples
-            continue
-
-        shap_explainer = SHAPExplainer(model, LABELS, use_fp16=use_fp16)
-
-        for sample in samples:
-            global_run += 1
-            sid  = sample["sample_id"]
-            text = sample["text"]
-            out_path = _OUT_DIR / f"shap_{vname}_{sid}.npy"
-
-            if out_path.exists():
-                global_done += 1
-                if global_run % 50 == 0:
-                    print(f"  [progress] {global_run}/{total_expected} "
-                          f"({global_done} saved, {global_run - global_done} skipped/error)")
-                continue
-
-            try:
-                shap_values = shap_explainer.explain(text, max_evals=500)
-                predicted_class = int(np.argmax(shap_explainer.predict_proba(text)))
-                scores_dict = {}
-                if hasattr(shap_values[0], 'data') and hasattr(shap_values[0], 'values'):
-                    data = shap_values[0].data
-                    values = shap_values[0].values
-                    for j, token in enumerate(data):
-                        if isinstance(token, str) and token.strip():
-                            scores_dict[token.strip()] = float(values[j][predicted_class])
-                word_scores = np.array(
-                    [scores_dict.get(w, 0.0) for w in text.split()],
-                    dtype=np.float32,
-                )
-                np.save(out_path, word_scores)
-                global_done += 1
-            except Exception as exc:
-                with open(_LOG_PATH, "a", encoding="utf-8") as _log:
-                    _log.write(f"{vname}\t{sid}\t{type(exc).__name__}: {exc}\n")
-
-            if global_run % 50 == 0:
-                pct = 100 * global_run / total_expected
-                print(f"  [progress] {global_run}/{total_expected} ({pct:.1f}%)  "
-                      f"{global_done} saved  variant={vname}  sample_id={sid}")
-
-    print(f"\n  SHAP attribution complete.")
-    print(f"  {global_done}/{total_expected} files saved to {_OUT_DIR}")
-    print(f"  File pattern: shap_{{variant}}_{{sample_id}}.npy")
-
-
-def run_occlusion_attribution():
-    import pandas as pd
-
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _FP32_DIR = _PROJECT_ROOT / "models" / "fp32_seed42"
-    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / "qat_seed42_clean"
-    _MODELS_DIR = _PROJECT_ROOT / "models"
-    _OUT_DIR = _PROJECT_ROOT / "results" / "attributions"
-    _LOG_PATH = _OUT_DIR / "occ_errors.log"
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
-        print("  Run: python scripts/prepare_datasets.py")
-        return
-    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = [
-        {"sample_id": int(row["sample_id"]), "text": row["text"],
-         "expected": _INT2LABEL[int(row["true_label"])]}
-        for _, row in df_sub.iterrows()
-    ]
-    print(f"\n  Loaded {len(samples)} samples from {_SUBSAMPLE_CSV.name}")
-
-    if not _FP32_DIR.exists():
-        print(f"  [ERROR] FP32 model not found: {_FP32_DIR}")
-        return
-    print(f"\n  Loading FP32 base: {_FP32_DIR}")
-    fp32_base = ModelManager.load_model(str(_FP32_DIR))
-    fp32_base.model.eval()
-
-    def _load_onnx(variant):
-        import onnxruntime as ort
-        onnx_dir = _MODELS_DIR / f"qat_onnx_{variant}_seed42"
-        onnx_file = onnx_dir / f"model_qat_{variant}.onnx"
-        if not onnx_file.exists():
-            print(f"  [SKIP] ONNX file not found: {onnx_file}")
-            return None
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
-        opts.log_severity_level = 3
-        session = ort.InferenceSession(
-            str(onnx_file), opts, providers=["CPUExecutionProvider"]
-        )
-        return OnnxBaseModel(session, fp32_base.tokenizer, None, torch.device("cpu"))
-
-    def _build_ptq(precision):
-        ptq = PTQQuantizer(fp32_base.model)
-        m, _ = getattr(ptq, f"quantize_{precision}")()
-        return BaseModel(m, fp32_base.tokenizer, device=fp32_base.device)
-
-    VARIANTS = [
-        ("fp32",          lambda: fp32_base,           False),
-        ("ptq_fp16",      lambda: _build_ptq("fp16"),  True),
-        ("ptq_int8",      lambda: _build_ptq("int8"),  False),
-        ("ptq_int4",      lambda: _build_ptq("int4"),  False),
-        ("qat_fp32",      lambda: (ModelManager.load_model(str(_QAT_CLEAN_DIR))
-                                   if _QAT_CLEAN_DIR.exists() else None), False),
-        ("qat_onnx_fp16", lambda: _load_onnx("fp16"), True),
-        ("qat_onnx_int8", lambda: _load_onnx("int8"), False),
-        ("qat_onnx_int4", lambda: _load_onnx("int4"), False),
-    ]
-
-    n_variants = len(VARIANTS)
-    n_samples  = len(samples)
-    total_expected = n_variants * n_samples
-    global_run = 0
-    global_done = 0
-
-    print(f"\n  Running Occlusion: {n_variants} variants x {n_samples} samples "
-          f"(window_size=1, [MASK] substitution)")
-    print(f"  Output: {_OUT_DIR}")
-    print(f"  Error log: {_LOG_PATH}")
-
-    for vname, load_fn, use_fp16 in VARIANTS:
-        print(f"\n{'-'*60}")
-        print(f"  [{vname.upper()}]  Loading model...")
-
-        model = load_fn()
-        if model is None:
-            print(f"  [SKIP] {vname} - model or ONNX file not found.")
-            global_run += n_samples
-            continue
-
-        occlusion_explainer = OcclusionExplainer(model, LABELS, use_fp16=use_fp16)
-
-        for sample in samples:
-            global_run += 1
-            sid  = sample["sample_id"]
-            text = sample["text"]
-            out_path = _OUT_DIR / f"occ_{vname}_{sid}.npy"
-
-            if out_path.exists():
-                global_done += 1
-                if global_run % 50 == 0:
-                    print(f"  [progress] {global_run}/{total_expected} "
-                          f"({global_done} saved, {global_run - global_done} skipped/error)")
-                continue
-
-            try:
-                occ_result = occlusion_explainer.explain(text, window_size=1)
-                word_scores = np.array(
-                    [score for _, score in occ_result["all_tokens_ordered"]],
-                    dtype=np.float32,
-                )
-                np.save(out_path, word_scores)
-                global_done += 1
-            except Exception as exc:
-                with open(_LOG_PATH, "a", encoding="utf-8") as _log:
-                    _log.write(f"{vname}\t{sid}\t{type(exc).__name__}: {exc}\n")
-
-            if global_run % 50 == 0:
-                pct = 100 * global_run / total_expected
-                print(f"  [progress] {global_run}/{total_expected} ({pct:.1f}%)  "
-                      f"{global_done} saved  variant={vname}  sample_id={sid}")
-
-    print(f"\n  Occlusion attribution complete.")
-    print(f"  {global_done}/{total_expected} files saved to {_OUT_DIR}")
-    print(f"  File pattern: occ_{{variant}}_{{sample_id}}.npy")
-
-def run_ste_calibration():
-    import pandas as pd
-    from scipy.stats import spearmanr
-
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _OUT_DIR      = _PROJECT_ROOT / "results" / "attributions"
-    _RESULT_CSV   = _PROJECT_ROOT / "results" / "ste_calibration.csv"
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
-        return
-    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
-    sample_ids = df_sub["sample_id"].tolist()[:20]
-    print(f"\n  STE Calibration: first 20 sample IDs from {_SUBSAMPLE_CSV.name}")
-
-    COMPARE_VARIANTS = ["qat_onnx_int8", "qat_onnx_int4"]
-    rows = []
-    missing_ig = 0
-
-    for vname in COMPARE_VARIANTS:
-        for sid in sample_ids:
-            ig_path  = _OUT_DIR / f"ig_qat_ste_{sid}.npy"
-            occ_path = _OUT_DIR / f"occ_{vname}_{sid}.npy"
-
-            if not ig_path.exists():
-                missing_ig += 1
-                continue
-            if not occ_path.exists():
-                print(f"  [SKIP] occ_{vname}_{sid}.npy not found")
-                continue
-
-            ig_scores  = np.load(ig_path).astype(np.float64)
-            occ_scores = np.load(occ_path).astype(np.float64)
-            L = min(len(ig_scores), len(occ_scores))
-            rho, _ = spearmanr(ig_scores[:L], occ_scores[:L])
-            rows.append({"sample_id": sid, "variant": vname, "spearman_rho": float(rho)})
-
-    if missing_ig > 0:
-        print(f"  [WARN] {missing_ig} ig_qat_ste_*.npy files missing — run STE-IG first (option [3])")
-    if not rows:
-        print("  [WARN] No data to compute. Aborting.")
-        return
-
-    df = pd.DataFrame(rows)
-    _RESULT_CSV.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(_RESULT_CSV, index=False, encoding="utf-8")
-    print(f"  Saved {len(rows)} rows -> {_RESULT_CSV}")
-
-    print()
-    for vname in COMPARE_VARIANTS:
-        sub = df[df["variant"] == vname]["spearman_rho"]
-        if sub.empty:
-            print(f"  {vname}: no data")
-            continue
-        mean_rho = sub.mean()
-        if mean_rho >= 0.6:
-            verdict = "VALID"
-        elif mean_rho >= 0.4:
-            verdict = "MARGINAL"
-        else:
-            verdict = "UNRELIABLE"
-        print(f"  {vname:20s}: mean_rho={mean_rho:.3f}  n={len(sub)}  -> {verdict}")
-
-
-def run_random_baselines():
-    import pandas as pd
-    from src.xai.random_baseline import RandomAttributionBaseline
-
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
-        return
-    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = [(int(row["sample_id"]), row["text"]) for _, row in df_sub.iterrows()]
-
-    baseline  = RandomAttributionBaseline(baseline_seed=42, n_draws=30)
-    n_draws   = baseline.n_draws
-    n_total   = len(samples) * n_draws
-    n_done    = 0
-    n_skipped = 0
-
-    print(f"\n  Random Baselines: {len(samples)} samples x {n_draws} draws = {n_total} files")
-    print(f"  sigma source priority: ig_fp32 > occ_fp32 > shap_fp32")
-    print(f"  Output: {_OUT_DIR}")
-
-    for sid, text in samples:
-        sigma_source = None
-        for prefix in ("ig_fp32", "occ_fp32", "shap_fp32"):
-            p = _OUT_DIR / f"{prefix}_{sid}.npy"
-            if p.exists():
-                sigma_source = p
-                break
-
-        if sigma_source is None:
-            print(f"  [SKIP] sid={sid}: no sigma source (ig_fp32/occ_fp32/shap_fp32)")
-            n_skipped += n_draws
-            continue
-
-        real_scores = np.load(sigma_source).astype(np.float64)
-        words = text.split()
-        L = min(len(words), len(real_scores))
-        real_scores = real_scores[:L]
-        words_trimmed = words[:L]
-
-        for i in range(n_draws):
-            out_path = _OUT_DIR / f"random_{sid}_{i}.npy"
-            if out_path.exists():
-                n_done += 1
-                continue
-            result = baseline.draw(text, words_trimmed, real_scores, i)
-            np.save(out_path, result.scores.astype(np.float32))
-            n_done += 1
-
-        if n_done % 500 == 0 or n_done + n_skipped == n_total:
-            print(f"  [progress] {n_done}/{n_total}  skipped={n_skipped}")
-
-    print(f"\n  Random baselines complete: {n_done}/{n_total} files saved  skipped={n_skipped}")
-    print(f"  File pattern: random_{{sample_id}}_{{run}}.npy")
-
-def run_cross_seed_verification():
-    import pandas as pd
-    import onnxruntime as ort
-    from scipy.stats import spearmanr
-
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _MODELS_DIR    = _PROJECT_ROOT / "models"
-    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
-    _RES_DIR       = _PROJECT_ROOT / "results"
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
-        return
-    df_sub  = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = [
-        {"sample_id": int(row["sample_id"]), "text": row["text"]}
-        for _, row in df_sub.iterrows()
-    ][:20]
-    print(f"\n  Cross-seed verification: {len(samples)} samples, seeds [42, 123, 456]")
-
-    all_rows = []
-
-    for seed in [42, 123, 456]:
-        print(f"\n  [{seed}]  loading models...")
-
-        fp32_model = ModelManager.load_model(str(_MODELS_DIR / f"fp32_seed{seed}"))
-        fp32_model.model.eval()
-
-        ptq_q = PTQQuantizer(fp32_model.model)
-        ptq_m, _ = ptq_q.quantize_int4()
-        ptq_model = BaseModel(ptq_m, fp32_model.tokenizer, device=fp32_model.device)
-
-        onnx_file = _MODELS_DIR / f"qat_onnx_int4_seed{seed}" / "model_qat_int4.onnx"
-        if not onnx_file.exists():
-            print(f"  [SKIP] {onnx_file} not found")
-            qat_model = None
-        else:
-            opts = ort.SessionOptions()
-            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
-            opts.log_severity_level = 3
-            session = ort.InferenceSession(
-                str(onnx_file), opts, providers=["CPUExecutionProvider"]
-            )
-            qat_model = OnnxBaseModel(session, fp32_model.tokenizer, None, torch.device("cpu"))
-
-        fp32_occ = OcclusionExplainer(fp32_model, LABELS, use_fp16=False)
-        ptq_occ  = OcclusionExplainer(ptq_model,  LABELS, use_fp16=False)
-        qat_occ  = OcclusionExplainer(qat_model,  LABELS, use_fp16=False) if qat_model else None
-
-        for sample in samples:
-            sid  = sample["sample_id"]
-            text = sample["text"]
-
-            sfx = "" if seed == 42 else f"_s{seed}"
-            fp32_path = _OUT_DIR / f"occ_fp32{sfx}_{sid}.npy"
-            ptq_path  = _OUT_DIR / f"occ_ptq_int4{sfx}_{sid}.npy"
-            qat_path  = _OUT_DIR / f"occ_qat_onnx_int4{sfx}_{sid}.npy"
-
-            if not fp32_path.exists():
-                r = fp32_occ.explain(text, window_size=1)
-                np.save(fp32_path, np.array([s for _, s in r["all_tokens_ordered"]], dtype=np.float32))
-            if not ptq_path.exists():
-                r = ptq_occ.explain(text, window_size=1)
-                np.save(ptq_path,  np.array([s for _, s in r["all_tokens_ordered"]], dtype=np.float32))
-            if qat_occ and not qat_path.exists():
-                r = qat_occ.explain(text, window_size=1)
-                np.save(qat_path,  np.array([s for _, s in r["all_tokens_ordered"]], dtype=np.float32))
-
-            if not fp32_path.exists():
-                print(f"  [SKIP] sid={sid} seed={seed}: fp32 missing")
-                continue
-
-            fp32_s = np.load(fp32_path).astype(np.float64)
-
-            if ptq_path.exists():
-                ptq_s = np.load(ptq_path).astype(np.float64)
-                L = min(len(fp32_s), len(ptq_s))
-                rho, _ = spearmanr(fp32_s[:L], ptq_s[:L])
-                all_rows.append({"seed": seed, "sample_id": sid,
-                                  "comparison": "fp32_vs_ptq_int4", "spearman_rho": float(rho)})
-
-            if qat_path.exists():
-                qat_s = np.load(qat_path).astype(np.float64)
-                L = min(len(fp32_s), len(qat_s))
-                rho, _ = spearmanr(fp32_s[:L], qat_s[:L])
-                all_rows.append({"seed": seed, "sample_id": sid,
-                                  "comparison": "fp32_vs_qat_onnx_int4", "spearman_rho": float(rho)})
-
-        n_seed = len([r for r in all_rows if r["seed"] == seed])
-        print(f"  seed={seed}: {n_seed} correlation rows computed")
-
-    if not all_rows:
-        print("  [WARN] No rows computed.")
-        return
-
-    df = pd.DataFrame(all_rows)
-    per_path = _RES_DIR / "cross_seed_verification.csv"
-    df.to_csv(per_path, index=False, encoding="utf-8")
-    print(f"\n  Saved {len(df)} rows -> {per_path}")
-
-    seed42_means = {
-        cmp: df[(df["seed"] == 42) & (df["comparison"] == cmp)]["spearman_rho"].mean()
-        for cmp in df["comparison"].unique()
-    }
-    summary_rows = []
-    for (cmp, seed), grp in df.groupby(["comparison", "seed"]):
-        mean_rho = grp["spearman_rho"].mean()
-        std_rho  = grp["spearman_rho"].std()
-        ref      = seed42_means.get(cmp, float("nan"))
-        delta    = abs(mean_rho - ref)
-        verdict  = "CONSISTENT" if delta <= 0.10 else "VARIABLE"
-        summary_rows.append({"comparison": cmp, "seed": seed,
-                              "mean_rho": round(mean_rho, 4), "std_rho": round(std_rho, 4),
-                              "delta_vs_seed42": round(delta, 4), "verdict": verdict})
-
-    df_sum = pd.DataFrame(summary_rows)
-    sum_path = _RES_DIR / "cross_seed_summary.csv"
-    df_sum.to_csv(sum_path, index=False, encoding="utf-8")
-    print(f"  Saved summary -> {sum_path}\n")
-    for _, row in df_sum.iterrows():
-        print(f"  {row['comparison']:30s}  seed={row['seed']}  "
-              f"mean_rho={row['mean_rho']:.3f}  delta={row['delta_vs_seed42']:.3f}  -> {row['verdict']}")
-
-def run_stability_analysis():
-    import pandas as pd
-    from scipy.stats import wilcoxon as scipy_wilcoxon
-    from scipy import stats as scipy_stats
-    from src.evaluation.explanation_drift import (
-        spearman_rank_correlation, top_k_jaccard, bootstrap_mean_ci,
-    )
-
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
-    _RES_DIR       = _PROJECT_ROOT / "results"
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
-        return
-    df_sub  = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = [(int(row["sample_id"]), row["text"]) for _, row in df_sub.iterrows()]
-
-    VARIANTS_7 = ["ptq_fp16", "ptq_int8", "ptq_int4", "qat_fp32",
-                  "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4"]
-    METHODS    = ["lime", "occ", "shap"]
-
-    print(f"\n  Stability analysis: {len(samples)} samples, "
-          f"{len(METHODS)} methods x {len(VARIANTS_7)} variants")
-    print(f"  Loading from: {_OUT_DIR}")
-
-    per_rows = []
-
-    def _load_pair(method, vname, sid, text):
-        fp32_path = _OUT_DIR / f"{method}_fp32_{sid}.npy"
-        var_path  = _OUT_DIR / f"{method}_{vname}_{sid}.npy"
-        if not fp32_path.exists() or not var_path.exists():
-            return None
-        words   = text.split()
-        fp32_s  = np.load(fp32_path).astype(np.float64)
-        var_s   = np.load(var_path).astype(np.float64)
-        L = min(len(words), len(fp32_s), len(var_s))
-        return words[:L], fp32_s[:L].tolist(), var_s[:L].tolist()
-
-    for method in METHODS:
-        for vname in VARIANTS_7:
-            n_found = 0
-            for sid, text in samples:
-                pair = _load_pair(method, vname, sid, text)
-                if pair is None:
-                    continue
-                words_l, fp32_l, var_l = pair
-                rho, _ = spearman_rank_correlation(words_l, fp32_l, words_l, var_l)
-                j3  = top_k_jaccard(words_l, fp32_l, words_l, var_l, k=3)
-                j5  = top_k_jaccard(words_l, fp32_l, words_l, var_l, k=5)
-                j10 = top_k_jaccard(words_l, fp32_l, words_l, var_l, k=10)
-                per_rows.append({"method": method, "variant": vname, "sample_id": sid,
-                                  "spearman_rho": rho,
-                                  "jaccard_k3": j3, "jaccard_k5": j5, "jaccard_k10": j10})
-                n_found += 1
-            if n_found:
-                print(f"  {method:5s} x {vname:20s}: {n_found} samples")
-
-    ig_found = sum(1 for sid, _ in samples if (_OUT_DIR / f"ig_fp32_{sid}.npy").exists())
-    if ig_found > 0:
-        for sid, text in samples:
-            pair = _load_pair("ig", "qat_ste", sid, text)
-            if pair is None:
-                continue
-            words_l, fp32_l, var_l = pair
-            rho, _ = spearman_rank_correlation(words_l, fp32_l, words_l, var_l)
-            j3  = top_k_jaccard(words_l, fp32_l, words_l, var_l, k=3)
-            j5  = top_k_jaccard(words_l, fp32_l, words_l, var_l, k=5)
-            j10 = top_k_jaccard(words_l, fp32_l, words_l, var_l, k=10)
-            per_rows.append({"method": "ig", "variant": "qat_ste", "sample_id": sid,
-                              "spearman_rho": rho,
-                              "jaccard_k3": j3, "jaccard_k5": j5, "jaccard_k10": j10})
-        print(f"  ig    x qat_ste             : {ig_found} samples")
-
-    if not per_rows:
-        print("  [WARN] No .npy pairs found. Run LIME/OCC/SHAP steps first.")
-        return
-
-    df_per = pd.DataFrame(per_rows)
-    per_path = _RES_DIR / "stability_perSample.csv"
-    df_per.to_csv(per_path, index=False, encoding="utf-8")
-    print(f"\n  Saved {len(df_per)} rows -> {per_path}")
-
-    n_comparisons    = df_per.groupby(["method", "variant"]).ngroups
-    alpha_bonferroni = 0.05 / n_comparisons
-
-    sum_rows = []
-    for (method, vname), grp in df_per.groupby(["method", "variant"]):
-        rhos = grp["spearman_rho"].dropna().tolist()
-        j5s  = grp["jaccard_k5"].dropna().tolist()
-        if len(rhos) < 2:
-            continue
-
-        rho_lo, rho_hi = bootstrap_mean_ci(rhos)
-        j5_lo,  j5_hi  = bootstrap_mean_ci(j5s)
-
-        diffs = [r - 1.0 for r in rhos]
-        try:
-            w_stat, w_p = scipy_wilcoxon(diffs, alternative="less")
-            z         = scipy_stats.norm.ppf(w_p)
-            effect_r  = abs(z) / np.sqrt(len(rhos))
-        except ValueError:
-            w_stat = w_p = effect_r = float("nan")
-
-        sum_rows.append({
-            "method": method, "variant": vname, "n": len(rhos),
-            "mean_rho":     round(float(np.mean(rhos)), 4),
-            "std_rho":      round(float(np.std(rhos)),  4),
-            "ci95_lo_rho":  round(rho_lo, 4),
-            "ci95_hi_rho":  round(rho_hi, 4),
-            "mean_j5":      round(float(np.mean(j5s)), 4),
-            "ci95_lo_j5":   round(j5_lo,  4),
-            "ci95_hi_j5":   round(j5_hi,  4),
-            "wilcoxon_stat":          round(w_stat,    4),
-            "wilcoxon_p":             round(w_p,       6),
-            "bonferroni_alpha":        round(alpha_bonferroni, 6),
-            "significant_bonferroni":  bool(w_p < alpha_bonferroni),
-            "effect_size_r":           round(effect_r,  4),
-        })
-
-    df_sum = pd.DataFrame(sum_rows)
-    sum_path = _RES_DIR / "stability_summary.csv"
-    df_sum.to_csv(sum_path, index=False, encoding="utf-8")
-    print(f"  Saved summary ({n_comparisons} comparisons, "
-          f"Bonferroni alpha={alpha_bonferroni:.5f}) -> {sum_path}")
-
-    floor_rows = []
-    for method in METHODS:
-        for sid, text in samples:
-            fp32_path  = _OUT_DIR / f"{method}_fp32_{sid}.npy"
-            rand_files = sorted(_OUT_DIR.glob(f"random_{sid}_*.npy"))
-            if not fp32_path.exists() or not rand_files:
-                continue
-            words  = text.split()
-            fp32_s = np.load(fp32_path).astype(np.float64)
-            L      = min(len(words), len(fp32_s))
-            fp32_l = fp32_s[:L].tolist()
-            words_l = words[:L]
-            rho_vals, j5_vals = [], []
-            for rf in rand_files:
-                rand_s = np.load(rf).astype(np.float64)
-                Lr = min(L, len(rand_s))
-                rand_l = rand_s[:Lr].tolist()
-                rho, _ = spearman_rank_correlation(words_l, fp32_l, words_l[:Lr], rand_l)
-                j5     = top_k_jaccard(words_l, fp32_l, words_l[:Lr], rand_l, k=5)
-                rho_vals.append(rho)
-                j5_vals.append(j5)
-            floor_rows.append({"method": method, "sample_id": sid,
-                                "floor_mean_rho": round(float(np.nanmean(rho_vals)), 4),
-                                "floor_mean_j5":  round(float(np.nanmean(j5_vals)),  4)})
-
-    df_floor = pd.DataFrame(floor_rows)
-    floor_path = _RES_DIR / "stability_random_floor.csv"
-    df_floor.to_csv(floor_path, index=False, encoding="utf-8")
-    print(f"  Saved random floor -> {floor_path}")
-
-    # Print verdict
-    print(f"\n  {'method':5s}  {'variant':20s}  {'rho':>6s} [95% CI]        "
-          f"{'J@5':>5s}  {'r':>5s}  sig?")
-    for _, row in df_sum.sort_values(["method", "mean_rho"]).iterrows():
-        sig = "*" if row["significant_bonferroni"] else " "
-        print(f"  {row['method']:5s}  {row['variant']:20s}  "
-              f"{row['mean_rho']:6.3f} [{row['ci95_lo_rho']:.3f},{row['ci95_hi_rho']:.3f}]  "
-              f"{row['mean_j5']:5.3f}  {row['effect_size_r']:5.3f}  {sig}")
-
-    compute_power_analysis()
-
-def run_faithfulness_evaluation():
-    import pandas as pd
-    from src.evaluation.faithfulness import FaithfulnessEvaluator
-
-    _PROJECT_ROOT  = Path(__file__).resolve().parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
-    _RES_DIR       = _PROJECT_ROOT / "results"
-    _FP32_DIR      = _PROJECT_ROOT / "models" / "fp32_seed42"
-    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / "qat_seed42_clean"
-    _MODELS_DIR    = _PROJECT_ROOT / "models"
-
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample not found: {_SUBSAMPLE_CSV}")
-        return
-    df_sub  = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = list(df_sub.itertuples(index=False))
-
-    print(f"\n  Loading FP32 base: {_FP32_DIR}")
-    fp32_base = ModelManager.load_model(str(_FP32_DIR))
-    fp32_base.model.eval()
-
-    def _load_onnx(variant):
-        import onnxruntime as ort
-        onnx_dir  = _MODELS_DIR / f"qat_onnx_{variant}_seed42"
-        onnx_file = onnx_dir / f"model_qat_{variant}.onnx"
-        if not onnx_file.exists():
-            return None
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
-        opts.log_severity_level = 3
-        session = ort.InferenceSession(str(onnx_file), opts, providers=["CPUExecutionProvider"])
-        return OnnxBaseModel(session, fp32_base.tokenizer, None, torch.device("cpu"))
-
-    def _build_ptq(precision):
-        ptq = PTQQuantizer(fp32_base.model)
-        m, _ = getattr(ptq, f"quantize_{precision}")()
-        return BaseModel(m, fp32_base.tokenizer, device=fp32_base.device)
-
-    VARIANTS = [
-        ("fp32",          lambda: fp32_base,           False),
-        ("ptq_fp16",      lambda: _build_ptq("fp16"),  True),
-        ("ptq_int8",      lambda: _build_ptq("int8"),  False),
-        ("ptq_int4",      lambda: _build_ptq("int4"),  False),
-        ("qat_fp32",      lambda: (ModelManager.load_model(str(_QAT_CLEAN_DIR))
-                                   if _QAT_CLEAN_DIR.exists() else None), False),
-        ("qat_onnx_fp16", lambda: _load_onnx("fp16"), True),
-        ("qat_onnx_int8", lambda: _load_onnx("int8"), False),
-        ("qat_onnx_int4", lambda: _load_onnx("int4"), False),
-    ]
-
-    METHODS = ["lime", "occ", "shap"]
-    per_rows = []
-
-    for method in METHODS:
-        for vname, load_fn, _ in VARIANTS:
-            model = load_fn()
-            if model is None:
-                print(f"  [SKIP] {method} x {vname}")
-                continue
-
-            if isinstance(model, OnnxBaseModel):
-                infer_model = _OnnxTorchAdapter(model)
-                device = torch.device("cpu")
-            else:
-                infer_model = model.model
-                device = model.device
-
-            evaluator = FaithfulnessEvaluator(
-                infer_model, fp32_base.tokenizer, device=device, k_values=(5,)
-            )
-
-            n_found = 0
-            for sample in samples:
-                sid  = int(sample.sample_id)
-                text = sample.text
-                npy_path = _OUT_DIR / f"{method}_{vname}_{sid}.npy"
-                if not npy_path.exists():
-                    continue
-                words  = text.split()
-                scores = np.load(npy_path).astype(np.float64)
-                L = min(len(words), len(scores))
-                if L < 1:
-                    continue
-                try:
-                    result = evaluator.evaluate(
-                        text, words[:L], scores[:L].tolist(),
-                        method=method, precision=vname, token_level="word",
-                    )
-                    fk = result.per_k[5]
-                    per_rows.append({
-                        "method": method, "variant": vname, "sample_id": sid,
-                        "orig_conf": round(fk.original_confidence, 4),
-                        "suff":      fk.sufficiency       if not np.isnan(fk.sufficiency)       else float("nan"),
-                        "comp":      fk.comprehensiveness if not np.isnan(fk.comprehensiveness) else float("nan"),
-                        "n_content": fk.n_content_tokens,
-                        "k":         fk.k,
-                    })
-                    n_found += 1
-                except Exception as exc:
-                    print(f"  [ERR] {method} {vname} sid={sid}: {exc}")
-
-            print(f"  {method:5s} x {vname:20s}: {n_found} samples")
-
-    if not per_rows:
-        print("  [WARN] No .npy files found. Run LIME/OCC/SHAP steps first.")
-        return
-
-    df_per = pd.DataFrame(per_rows)
-    per_path = _RES_DIR / "faithfulness_perSample.csv"
-    df_per.to_csv(per_path, index=False, encoding="utf-8")
-    print(f"\n  Saved {len(df_per)} rows -> {per_path}")
-
-    sum_rows = []
-    for (method, vname), grp in df_per.groupby(["method", "variant"]):
-        sum_rows.append({
-            "method": method, "variant": vname, "n": len(grp),
-            "mean_suff": round(float(grp["suff"].dropna().mean()), 4),
-            "std_suff":  round(float(grp["suff"].dropna().std()),  4),
-            "mean_comp": round(float(grp["comp"].dropna().mean()), 4),
-            "std_comp":  round(float(grp["comp"].dropna().std()),  4),
-        })
-    df_sum = pd.DataFrame(sum_rows)
-    sum_path = _RES_DIR / "faithfulness_summary.csv"
-    df_sum.to_csv(sum_path, index=False, encoding="utf-8")
-    print(f"  Saved summary -> {sum_path}")
-
-    print(f"\n  {'method':5s}  {'variant':20s}  {'mean_suff':>9s}  {'mean_comp':>9s}")
-    for _, row in df_sum.sort_values(["method", "variant"]).iterrows():
-        print(f"  {row['method']:5s}  {row['variant']:20s}  "
-              f"{row['mean_suff']:9.4f}  {row['mean_comp']:9.4f}")
-
-def compute_power_analysis():
-    import math
-    per_path = _RES_DIR / "stability_perSample.csv"
-    if not per_path.exists():
-        print("  [WARN] stability_perSample.csv not found. Run Stability Analysis first.")
-        return
-
-    df = pd.read_csv(per_path)
-    # Z_alpha/2 (0.05 two-tailed) + Z_beta (0.80 power) = 1.960 + 0.842 = 2.802
-    # one-sided Wilcoxon-equivalent: Z_0.05 + Z_0.20 = 1.645 + 0.842 = 2.487
-    Z = 2.487
-    n = 50
-    power_rows = []
-    print(f"\n  Power analysis (alpha=0.05, power=0.80, n={n}):")
-    print(f"  {'method':5s}  {'observed_sd':>11s}  {'min_detectable_delta_rho':>24s}")
-    for method, grp in df.groupby("method"):
-        sd = float(grp["spearman_rho"].dropna().std())
-        delta = Z * sd / math.sqrt(n)
-        power_rows.append({"method": method, "observed_sd": round(sd, 4),
-                            "min_detectable_delta_rho": round(delta, 4)})
-        print(f"  {method:5s}  {sd:11.4f}  {delta:24.4f}")
-
-    out_path = _RES_DIR / "power_analysis.csv"
-    pd.DataFrame(power_rows).to_csv(out_path, index=False, encoding="utf-8")
-    print(f"  Saved -> {out_path}")
-
 def interactive_menu():
     print("\n" + "=" * 60)
     print("  XAI ANALYSIS RUNNER")
@@ -1742,8 +603,9 @@ def interactive_menu():
     print("  [9] Cross-seed Verification (Occlusion seeds 123/456 vs 42, first 20 samples)")
     print("  [10] Stability Analysis (FP32 vs 7 variants, Spearman+Jaccard+Bootstrap+Bonferroni)")
     print("  [11] Faithfulness Evaluation (Suff+Comp k=5, all 8 variants x LIME/OCC/SHAP)")
+    print("  [12] Cross-method Agreement (FP32 ig/gxi/lime/occ/shap Spearman NxN matrix)")
 
-    method_choice = input("\n  Enter choice (1-11): ").strip()
+    method_choice = input("\n  Enter choice (1-12): ").strip()
 
     if method_choice == "2":
         return _qat_menu()
@@ -1774,6 +636,9 @@ def interactive_menu():
 
     if method_choice == "11":
         return "faithfulness", [], 50, None
+
+    if method_choice == "12":
+        return "cross_method", [], 50, None
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
@@ -1920,7 +785,6 @@ def interactive_menu():
 
     return experiment_key, precisions, num_samples, None
 
-
 def _qat_menu():
     experiment_key = "qat_eager_smsa"
 
@@ -2001,10 +865,8 @@ def _qat_menu():
 
     return experiment_key, precisions, num_samples, None
 
-
 def _is_qat_experiment(version_key):
     return version_key in QAT_EXPERIMENT_CONFIGS
-
 
 def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=None):
     is_qat = _is_qat_experiment(version_key)
@@ -2113,7 +975,7 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
         for i in range(len(samples)):
             lr = lime_res[i]
             sr = shap_res[i]
-            ir = ig_res[i]  # may be None for INT8/INT4
+            ir = ig_res[i]
             oc = occ_res[i]
             print(f"\n  Sample {i+1}: Pred={lr['predicted_label']} | Expected={samples[i]['expected']}")
             print(f"    LIME top 3: {', '.join(f'{f[0]}({f[1]:+.3f})' for f in lr['top_features'][:3])}")
@@ -2130,16 +992,10 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
                 print(f"    IG: [not available for {precision} — gradient-based method requires FP32/FP16]")
             print(f"    Occlusion top 3: {', '.join(f'{t[0]}({t[1]:+.3f})' for t in oc['token_importance'][:3])}")
 
-    # --- Subword aggregation comparison (sum vs mean) for IG --------------------
-    # Reviewer note: summing subword attributions inflates scores for
-    # morphologically complex tokens (e.g. reduplication, affixation).
-    # Mean-pooling is the recommended primary strategy; both are reported
-    # so the paper can discuss the difference.
     _ig_precisions_with_data = [p for p in precisions if all_ig.get(p) and all_ig[p][0] is not None]
     if len(_ig_precisions_with_data) >= 2:
         from src.xai.alignment import build_alignment_batch, project_subword_to_word
         _texts = [s["text"] for s in samples]
-        # Use tokenizer from the base model (FP32 — same vocab for all variants)
         if not is_qat and "fp32" in precisions:
             _tokenizer = base_model.tokenizer
         else:
@@ -2168,7 +1024,6 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
                 "aggregations": _aggregation_report,
             }, _f, ensure_ascii=False, indent=2)
         print(f"\n  Subword aggregation comparison (sum vs mean) saved: {_agg_path}")
-    # ---------------------------------------------------------------------------
 
     print_section("GENERATING COMPARISON CHARTS")
 
@@ -2186,7 +1041,6 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
 
     print("\n  Prediction Summary:")
     generate_prediction_summary(all_lime, samples, precisions, comparison_dir)
-
 
 def run_alignment_diagnostics(version_key, num_samples, divergence_samples=None):
     is_qat, config = _resolve_config(version_key)
@@ -2236,7 +1090,6 @@ def run_alignment_diagnostics(version_key, num_samples, divergence_samples=None)
     }
     _save_json(payload, output_path)
     print(f"  Saved alignment report: {output_path}")
-
 
 def run_attention_diagnostics(version_key, precisions, num_samples, divergence_samples=None):
     is_qat, config = _resolve_config(version_key)
@@ -2317,7 +1170,6 @@ def run_attention_diagnostics(version_key, precisions, num_samples, divergence_s
             summary,
             output_dir / f"attention_summary_{base_precision}_vs_{variant_precision}.json",
         )
-
 
 def run_ig_metrics_diagnostics(version_key, base_precision, variant_precision, num_samples, divergence_samples=None):
     is_qat, config = _resolve_config(version_key)
@@ -2416,7 +1268,6 @@ def run_ig_metrics_diagnostics(version_key, base_precision, variant_precision, n
     _save_json(payload, output_path)
     print(f"  Saved IG metrics: {output_path}")
 
-
 def run_xai_diagnostics():
     experiment_key, precisions, num_samples, divergence_samples = interactive_menu()
 
@@ -2459,7 +1310,6 @@ def run_xai_diagnostics():
             )
 
     print_section("XAI DIAGNOSTICS COMPLETED")
-
 
 if __name__ == "__main__":
     experiment_key, precisions, num_samples, divergence_samples = interactive_menu()

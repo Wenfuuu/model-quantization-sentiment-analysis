@@ -225,3 +225,67 @@ def compare_calibration(
         "brier_score_fp32": cal_fp32.get("brier_score"),
         "brier_score_quantized": cal_quantized.get("brier_score"),
     }
+
+def run_ste_calibration():
+    import pandas as pd
+    from scipy.stats import spearmanr
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
+    _OUT_DIR      = _PROJECT_ROOT / "results" / "attributions"
+    _RESULT_CSV   = _PROJECT_ROOT / "results" / "ste_calibration.csv"
+
+    if not _SUBSAMPLE_CSV.exists():
+        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
+        return
+    df_sub = pd.read_csv(_SUBSAMPLE_CSV)
+    sample_ids = df_sub["sample_id"].tolist()[:20]
+    print(f"\n  STE Calibration: first 20 sample IDs from {_SUBSAMPLE_CSV.name}")
+
+    COMPARE_VARIANTS = ["qat_onnx_int8", "qat_onnx_int4"]
+    rows = []
+    missing_ig = 0
+
+    for vname in COMPARE_VARIANTS:
+        for sid in sample_ids:
+            ig_path  = _OUT_DIR / f"ig_qat_ste_{sid}.npy"
+            occ_path = _OUT_DIR / f"occ_{vname}_{sid}.npy"
+
+            if not ig_path.exists():
+                missing_ig += 1
+                continue
+            if not occ_path.exists():
+                print(f"  [SKIP] occ_{vname}_{sid}.npy not found")
+                continue
+
+            ig_scores  = np.load(ig_path).astype(np.float64)
+            occ_scores = np.load(occ_path).astype(np.float64)
+            L = min(len(ig_scores), len(occ_scores))
+            rho, _ = spearmanr(ig_scores[:L], occ_scores[:L])
+            rows.append({"sample_id": sid, "variant": vname, "spearman_rho": float(rho)})
+
+    if missing_ig > 0:
+        print(f"  [WARN] {missing_ig} ig_qat_ste_*.npy files missing - run STE-IG first (option [3])")
+    if not rows:
+        print("  [WARN] No data to compute. Aborting.")
+        return
+
+    df = pd.DataFrame(rows)
+    _RESULT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(_RESULT_CSV, index=False, encoding="utf-8")
+    print(f"  Saved {len(rows)} rows -> {_RESULT_CSV}")
+
+    print()
+    for vname in COMPARE_VARIANTS:
+        sub = df[df["variant"] == vname]["spearman_rho"]
+        if sub.empty:
+            print(f"  {vname}: no data")
+            continue
+        mean_rho = sub.mean()
+        if mean_rho >= 0.6:
+            verdict = "VALID"
+        elif mean_rho >= 0.4:
+            verdict = "MARGINAL"
+        else:
+            verdict = "UNRELIABLE"
+        print(f"  {vname:20s}: mean_rho={mean_rho:.3f}  n={len(sub)}  -> {verdict}")
