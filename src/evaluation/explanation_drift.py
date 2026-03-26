@@ -28,7 +28,6 @@ def spearman_rank_correlation(
     rho, p_val = stats.spearmanr(arr_a, arr_b)
     return float(rho), float(p_val)
 
-
 def top_k_jaccard(
     tokens_a: List[str],
     scores_a: List[float],
@@ -84,6 +83,22 @@ def normalized_magnitude_shift(
     scale = np.mean(np.abs(arr_a)) + eps
     shift = np.mean(np.abs(arr_b - arr_a))
     return float(shift / scale)
+
+def bootstrap_mean_ci(
+    values: List[float],
+    n_boot: int = 1000,
+    ci: float = 0.95,
+    seed: int = 42,
+) -> Tuple[float, float]:
+    a = np.array([x for x in values if not np.isnan(x)], dtype=float)
+    if len(a) < 2:
+        return float("nan"), float("nan")
+    rng = np.random.default_rng(seed)
+    boot_means = np.array([rng.choice(a, size=len(a), replace=True).mean()
+                           for _ in range(n_boot)])
+    lo = float(np.percentile(boot_means, 100 * (1 - ci) / 2))
+    hi = float(np.percentile(boot_means, 100 * (1 + ci) / 2))
+    return lo, hi
 
 def aggregate_explanation_drift(
     explanations_a: List[dict],
