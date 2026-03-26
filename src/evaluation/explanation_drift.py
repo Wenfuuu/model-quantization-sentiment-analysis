@@ -505,3 +505,100 @@ def compute_cross_method_agreement():
                 val = mean_lookup.get((m_a, m_b), mean_lookup.get((m_b, m_a)))
                 row_str += f"  {val:>6.3f}" if val is not None else f"  {'  n/a':>6s}"
         print(row_str)
+
+def probe_attribution_analysis():
+    import pandas as pd
+    import torch
+    from src.models import ModelManager
+    from src.models.base import BaseModel, OnnxBaseModel
+    from src.quantization.ptq import PTQQuantizer
+    from src.config import LABELS
+    from src.xai.occlusion import OcclusionExplainer
+    import onnxruntime as ort
+
+    _ROOT = Path(__file__).resolve().parent.parent.parent
+    _RES_DIR = _ROOT / "results"
+    _MODELS_DIR = _ROOT / "models"
+    _PRED_CSV = _RES_DIR / "probe_predictions_allseeds.csv"
+
+    if not _PRED_CSV.exists():
+        print(f"  [ERROR] {_PRED_CSV} not found — run stress test first.")
+        return
+
+    df = pd.read_csv(_PRED_CSV)
+    df_fp32 = df[(df["precision"] == "fp32") & (df["seed"] == 42) &
+                 (df["predicted"] == df["expected"])].copy()
+
+    selected = (df_fp32.groupby("phenomenon", group_keys=False)
+                .apply(lambda g: g.head(5))
+                .head(40)
+                .reset_index(drop=True))
+    print(f"\n  Probe attribution: {len(selected)} probes × 3 variants")
+
+    fp32_base = ModelManager.load_model(str(_MODELS_DIR / "fp32_seed42"))
+    fp32_base.model.eval()
+
+    def _build_ptq_int4():
+        ptq = PTQQuantizer(fp32_base.model)
+        m, _ = ptq.quantize_int4()
+        return BaseModel(m, fp32_base.tokenizer, device=torch.device("cpu"))
+
+    def _load_qat_onnx_int4():
+        onnx_file = _MODELS_DIR / "qat_onnx_int4_seed42" / "model_qat_int4.onnx"
+        if not onnx_file.exists():
+            return None
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        sess = ort.InferenceSession(str(onnx_file), opts, providers=["CPUExecutionProvider"])
+        return OnnxBaseModel(sess, fp32_base.tokenizer, None, torch.device("cpu"))
+
+    variants = [
+        ("fp32_seed42",       fp32_base,          False),
+        ("ptq_int4_seed42",   _build_ptq_int4(),  False),
+        ("qat_onnx_int4_seed42", _load_qat_onnx_int4(), False),
+    ]
+    variants = [(n, m, f) for n, m, f in variants if m is not None]
+
+    rows = []
+    for _, probe_row in selected.iterrows():
+        text = probe_row["text"]
+        phenomenon = probe_row["phenomenon"]
+        raw_tokens = probe_row.get("phenomenon_tokens", "[]")
+        if isinstance(raw_tokens, str):
+            import ast
+            try:
+                phenom_tokens = ast.literal_eval(raw_tokens)
+            except Exception:
+                phenom_tokens = [t.strip() for t in raw_tokens.strip("[]").split(",") if t.strip()]
+        else:
+            phenom_tokens = list(raw_tokens)
+
+        for vname, model, use_fp16 in variants:
+            explainer = OcclusionExplainer(model, LABELS, use_fp16=use_fp16)
+            result = explainer.explain(text, window_size=1)
+            ranked = result["token_importance"] 
+            rank_map = {word: rank + 1 for rank, (word, _) in enumerate(ranked)}
+            score_map = {word: score for word, score in ranked}
+
+            for tok in phenom_tokens:
+                rank = rank_map.get(tok)
+                score = score_map.get(tok, float("nan"))
+                rows.append({
+                    "phenomenon": phenomenon,
+                    "variant": vname,
+                    "token": tok,
+                    "text": text,
+                    "rank": rank,
+                    "score": score,
+                    "in_top5": (rank is not None and rank <= 5),
+                })
+
+    df_out = pd.DataFrame(rows)
+    out_path = _RES_DIR / "probe_attribution_analysis.csv"
+    df_out.to_csv(out_path, index=False)
+    print(f"  Saved {len(df_out)} rows -> {out_path}")
+
+    print(f"\n  {'phenomenon':20s}  {'variant':25s}  top5_frac")
+    for (phenom, vname), grp in df_out.groupby(["phenomenon", "variant"]):
+        frac = grp["in_top5"].mean()
+        print(f"  {phenom:20s}  {vname:25s}  {frac:.2f}")
