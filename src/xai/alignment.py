@@ -142,8 +142,7 @@ def _build_alignment_slow(
 ) -> WordSubwordAlignment:
     encoding    = tokenizer(text, add_special_tokens=True)
     all_tokens  = tokenizer.convert_ids_to_tokens(encoding["input_ids"])
-    content     = [t for t in all_tokens
-                   if t not in ("[CLS]", "[SEP]", "[PAD]", "<s>", "</s>", "<pad>")]
+    content     = [t for t in all_tokens if t not in ("[CLS]", "[SEP]", "[PAD]", "<s>", "</s>", "<pad>")]
 
     W = len(words)
     S = len(content)
