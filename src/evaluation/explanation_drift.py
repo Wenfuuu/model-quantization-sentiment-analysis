@@ -250,7 +250,7 @@ def run_stability_analysis():
     samples = [(int(row["sample_id"]), row["text"]) for _, row in df_sub.iterrows()]
 
     VARIANTS_7 = ["ptq_fp16", "ptq_int8", "ptq_int4", "qat_fp32",
-                   "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4"]
+                   "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4", "fp32_control"]
     METHODS = ["lime", "occ", "shap"]
 
     def _load_pair(method, vname, sid, text):
@@ -392,13 +392,55 @@ def run_stability_analysis():
     df_floor.to_csv(floor_path, index=False, encoding="utf-8")
     print(f"  Saved random floor -> {floor_path}")
 
-    print(f"\n  {'method':5s}  {'variant':20s}  {'rho':>6s} [95% CI]        "
+    _DISPLAY = {"fp32_control": "FP32-Control"}
+
+    print(f"\n  {'method':5s}  {'variant':22s}  {'rho':>6s} [95% CI]        "
           f"{'J@5':>5s}  {'r':>5s}  sig?")
     for _, row in df_sum.sort_values(["method", "mean_rho"]).iterrows():
         sig = "*" if row["significant_bonferroni"] else " "
-        print(f"  {row['method']:5s}  {row['variant']:20s}  "
+        label = _DISPLAY.get(row["variant"], row["variant"])
+        print(f"  {row['method']:5s}  {label:22s}  "
               f"{row['mean_rho']:6.3f} [{row['ci95_lo_rho']:.3f},{row['ci95_hi_rho']:.3f}]  "
               f"{row['mean_j5']:5.3f}  {row['effect_size_r']:5.3f}  {sig}")
+
+    import json as _json
+
+    stability_json: dict = {}
+    for _, row in df_sum.iterrows():
+        variant = str(row["variant"])
+        method  = str(row["method"])
+        if variant not in stability_json:
+            stability_json[variant] = {}
+        stability_json[variant][method] = {
+            "n":                        int(row["n"]),
+            "mean_rho":                 float(row["mean_rho"]),
+            "std_rho":                  float(row["std_rho"]),
+            "ci95_lo_rho":              float(row["ci95_lo_rho"]),
+            "ci95_hi_rho":              float(row["ci95_hi_rho"]),
+            "mean_j5":                  float(row["mean_j5"]),
+            "ci95_lo_j5":               float(row["ci95_lo_j5"]),
+            "ci95_hi_j5":               float(row["ci95_hi_j5"]),
+            "wilcoxon_p":               float(row["wilcoxon_p"]),
+            "significant_bonferroni":   bool(row["significant_bonferroni"]),
+            "effect_size_r":            float(row["effect_size_r"]),
+        }
+
+    json_path = _RES_DIR / "stability_results.json"
+    with open(json_path, "w", encoding="utf-8") as _f:
+        _json.dump(stability_json, _f, indent=2)
+    print(f"\n  Stability results JSON saved -> {json_path}")
+
+    if "fp32_control" in stability_json:
+        ctrl = stability_json["fp32_control"]
+        mean_rhos = [v["mean_rho"] for v in ctrl.values()]
+        print(f"  [FP32-Control] mean rho across methods: "
+              f"{float(np.mean(mean_rhos)):.4f}  (written under key 'fp32_control')")
+    else:
+        print(
+            "  [FP32-Control] No attribution files found "
+            f"(expected: results/attributions/{{method}}_fp32_control_{{sid}}.npy). "
+            "Run the XAI pipeline on fp32_control_seed{{seed}} checkpoints first."
+        )
 
     compute_power_analysis()
 

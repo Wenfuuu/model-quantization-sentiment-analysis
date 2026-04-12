@@ -304,8 +304,10 @@ def main(args):
     else:
         seeds = args.seeds
 
+    _ctrl = getattr(args, "control_retrain", False)
+    _mode = "FP32-CONTROL (no fake-quant observers)" if _ctrl else "FP32-baseline"
     print("\n" + "=" * 60)
-    print("  MULTI-SEED FINETUNING: IndoBERT -> SMSA 3-label")
+    print(f"  MULTI-SEED FINETUNING [{_mode}]: IndoBERT -> SMSA 3-label")
     print(f"  Seeds: {seeds}")
     print(f"  Epochs: {args.epochs} | LR: {args.lr} | Batch: {args.batch_size}")
     print("=" * 60)
@@ -318,6 +320,8 @@ def main(args):
 
         if args.save_dir and len(seeds) == 1:
             save_dir = Path(args.save_dir)
+        elif getattr(args, "control_retrain", False):
+            save_dir = SAVE_BASE / f"fp32_control_seed{seed}"
         else:
             save_dir = SAVE_BASE / f"fp32_seed{seed}"
 
@@ -328,6 +332,13 @@ def main(args):
             batch_size=args.batch_size,
         )
         all_results.append(result)
+
+        if getattr(args, "control_retrain", False):
+            ckpt_path = SAVE_BASE / f"fp32_control_seed{seed}.pt"
+            _ctrl_model = AutoModelForSequenceClassification.from_pretrained(save_dir)
+            torch.save(_ctrl_model.state_dict(), ckpt_path)
+            print(f"  Control checkpoint saved -> {ckpt_path}")
+            del _ctrl_model
 
     if len(all_results) > 1:
         accs = [r["test_accuracy"] for r in all_results]
@@ -356,6 +367,14 @@ def parse_args():
     p.add_argument("--batch-size", type=int,   default=16)
     p.add_argument("--save-dir",   type=str,   default=None,
                    help="Override save directory (single-seed mode only).")
+    p.add_argument(
+        "--control-retrain",
+        action="store_true",
+        default=False,
+        help=(
+            "Saves to models/fp32_control_seed{seed}/ (HuggingFace format)"
+        ),
+    )
     return p.parse_args()
 
 if __name__ == "__main__":
