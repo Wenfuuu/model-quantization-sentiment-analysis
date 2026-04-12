@@ -139,6 +139,7 @@ def run_multiseed_qat(
     epochs: int = 3,
     lr: float = 1e-5,
     batch_size: int = 16,
+    qat_precision: str = "int8",
 ) -> None:
     if seeds is None:
         seeds = list(TRAINING_SEEDS)
@@ -163,7 +164,7 @@ def run_multiseed_qat(
 
     print("\n" + "=" * 70)
     print("  MULTI-SEED QAT: FP32 → QAT-FP32 (fake quantisation)")
-    print(f"  Seeds: {seeds}  |  epochs={epochs}  lr={lr}  batch={batch_size}")
+    print(f"  Seeds: {seeds}  |  epochs={epochs}  lr={lr}  batch={batch_size}  precision={qat_precision}")
     print("=" * 70 + "\n")
 
     all_results = []
@@ -183,6 +184,7 @@ def run_multiseed_qat(
             epochs=epochs,
             lr=lr,
             batch_size=batch_size,
+            qat_precision=qat_precision,
         )
         all_results.append(result)
 
@@ -702,6 +704,16 @@ def main():
         help="QAT learning rate (multi-seed mode only)",
     )
     parser.add_argument(
+        "--qat-precision",
+        type=str,
+        choices=["fp16", "int8", "int4"],
+        default="int8",
+        help=(
+            "Fake-quantization precision for multi-seed QAT: "
+            "fp16 (FP16-range scale init), int8 (default), or int4 (4-bit weight range)"
+        ),
+    )
+    parser.add_argument(
         "--multiseed-qat-onnx",
         action="store_true",
         default=False,
@@ -720,7 +732,7 @@ def main():
         return
 
     if args.multiseed_qat:
-        run_multiseed_qat(epochs=args.qat_epochs, lr=args.qat_lr)
+        run_multiseed_qat(epochs=args.qat_epochs, lr=args.qat_lr, qat_precision=args.qat_precision)
         return
 
     if args.multiseed_qat_onnx:

@@ -118,6 +118,8 @@ import warnings
 import pandas as pd
 import torch.nn.functional as F
 import torch.quantization as tq
+from torch.quantization.observer import MinMaxObserver
+from torch.quantization.fake_quantize import FakeQuantize
 from torch.utils.data import Dataset
 from sklearn.metrics import accuracy_score, classification_report, f1_score
 from transformers import AutoTokenizer
@@ -133,8 +135,6 @@ _NUM_LABELS = 3
 
 
 class SentimentCSVDataset(Dataset):
-    """Load preprocessed SmSA CSV (columns: text, label)."""
-
     def __init__(self, path: Path, tokenizer, max_length: int = 128):
         df = pd.read_csv(path)
         df = df.dropna(subset=["text", "label"])
@@ -178,6 +178,104 @@ def apply_qat_config(model) -> None:
     tq.prepare_qat(model, inplace=True)
     print("  [qat] Fake-quantization observers attached (INT8-level noise)")
 
+_FP16_MAX = 65504.0
+
+QAT_PRECISION_CONFIGS = {
+    "fp16": {
+        "description": (
+            "Symmetric per-tensor fake quant; scale initialised to FP16 dynamic range"
+        ),
+        "qconfig": tq.QConfig(
+            activation=FakeQuantize.with_args(
+                observer=MinMaxObserver,
+                quant_min=-127,
+                quant_max=127,
+                dtype=torch.qint8,
+                qscheme=torch.per_tensor_symmetric,
+            ),
+            weight=FakeQuantize.with_args(
+                observer=MinMaxObserver,
+                quant_min=-127,
+                quant_max=127,
+                dtype=torch.qint8,
+                qscheme=torch.per_tensor_symmetric,
+            ),
+        ),
+        "fp16_scale_init": True,
+    },
+    "int8": {
+        "description": "Default INT8 fake quant (default_fake_quant / default_weight_fake_quant)",
+        "qconfig": tq.QConfig(
+            activation=tq.default_fake_quant,
+            weight=tq.default_weight_fake_quant,
+        ),
+        "fp16_scale_init": False,
+    },
+    "int4": {
+        "description": (
+            "INT4-range symmetric fake quant (quant_min=-8, quant_max=7, dtype=qint8)"
+        ),
+        "qconfig": tq.QConfig(
+            activation=tq.default_fake_quant,
+            weight=FakeQuantize.with_args(
+                observer=MinMaxObserver,
+                quant_min=-8,
+                quant_max=7,
+                dtype=torch.qint8,
+                qscheme=torch.per_tensor_symmetric,
+            ),
+        ),
+        "fp16_scale_init": False,
+    },
+}
+
+
+def apply_qat_config_precision(model, precision: str = "int8") -> None:
+    if precision not in QAT_PRECISION_CONFIGS:
+        raise ValueError(
+            f"Unknown QAT precision {precision!r}. "
+            f"Valid choices: {list(QAT_PRECISION_CONFIGS)}"
+        )
+    cfg = QAT_PRECISION_CONFIGS[precision]
+    model.train()
+    model.qconfig = cfg["qconfig"]
+    if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
+        model.bert.embeddings.qconfig = None
+        print(f"  [qat-{precision}] Embedding layer excluded from quantization")
+    tq.prepare_qat(model, inplace=True)
+    print(f"  [qat-{precision}] Fake-quantization observers attached ({cfg['description']})")
+
+    if cfg.get("fp16_scale_init"):
+        fp16_scale = _FP16_MAX / 127.0
+        n_init = 0
+        for module in model.modules():
+            if isinstance(module, FakeQuantize):
+                module.scale.data.fill_(fp16_scale)
+                module.zero_point.data.fill_(0.0)
+                n_init += 1
+        print(
+            f"  [qat-fp16] Initialised {n_init} FakeQuantize scales to FP16 dynamic range "
+            f"(scale≈{fp16_scale:.2f})"
+        )
+
+
+def _collect_observer_stats(model, seed: int, precision: str) -> dict:
+    observers: dict = {}
+    for name, module in model.named_modules():
+        if isinstance(module, FakeQuantize):
+            scale_val = module.scale.detach().cpu().tolist()
+            zp_val = module.zero_point.detach().cpu().tolist()
+            observers[name] = {
+                "scale": scale_val if isinstance(scale_val, list) else [scale_val],
+                "zero_point": zp_val if isinstance(zp_val, list) else [zp_val],
+            }
+    return {
+        "seed": seed,
+        "precision": precision,
+        "n_observers": len(observers),
+        "observers": observers,
+    }
+
 
 def strip_observers(state_dict: dict) -> dict:
     observer_markers = (
@@ -193,7 +291,6 @@ def strip_observers(state_dict: dict) -> dict:
         if not any(m in k for m in observer_markers)
     }
 
-
 def _set_all_seeds(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -203,7 +300,6 @@ def _set_all_seeds(seed: int) -> None:
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     print(f"  [seed] All random states set to {seed}")
-
 
 def _run_qat_epoch(model, loader, optimizer, scheduler, device, *, train: bool):
     model.train(train)
@@ -236,7 +332,6 @@ def _run_qat_epoch(model, loader, optimizer, scheduler, device, *, train: bool):
     w_f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=0)
     return avg_loss, acc, w_f1
 
-
 def _collect_predictions(model, loader, device):
     model.eval()
     all_true, all_pred, all_probs = [], [], []
@@ -256,7 +351,6 @@ def _collect_predictions(model, loader, device):
 
     return all_true, all_pred, np.concatenate(all_probs, axis=0)
 
-
 def train_qat_seed(
     seed: int,
     *,
@@ -271,6 +365,7 @@ def train_qat_seed(
     batch_size: int = 16,
     weight_decay: float = 0.01,
     max_length: int = 128,
+    qat_precision: str = "int8",
 ) -> dict:
     print(f"\n{'='*70}")
     print(f"#  QAT  SEED {seed}")
@@ -278,15 +373,18 @@ def train_qat_seed(
 
     _set_all_seeds(seed)
 
-    obs_dir   = models_dir / f"qat_seed{seed}_with_observers"
-    clean_dir = models_dir / f"qat_seed{seed}_clean"
+    if qat_precision == "int8":
+        obs_dir   = models_dir / f"qat_seed{seed}_with_observers"
+        clean_dir = models_dir / f"qat_seed{seed}_clean"
+    else:
+        obs_dir   = models_dir / f"qat_{qat_precision}_seed{seed}_with_observers"
+        clean_dir = models_dir / f"qat_{qat_precision}_seed{seed}_clean"
     for d in (obs_dir, clean_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     if not fp32_ckpt.exists():
         raise FileNotFoundError(
             f"FP32 checkpoint not found: {fp32_ckpt}\n"
-            "Run scripts/finetune_smsa_fp32_no_sw.py first."
         )
 
     print(f"Loading FP32 checkpoint from {fp32_ckpt} ...")
@@ -295,7 +393,7 @@ def train_qat_seed(
         fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
     )
 
-    apply_qat_config(model)
+    apply_qat_config_precision(model, qat_precision)
     model = model.to(device)
 
     print("Loading datasets ...")
@@ -347,6 +445,8 @@ def train_qat_seed(
             best_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             print(f"  [ckpt] New best val wF1={best_val_wf1:.4f}")
 
+    observer_stats = _collect_observer_stats(model, seed, qat_precision)
+
     print(f"\nSaving with-observers checkpoint -> {obs_dir}")
     torch.save(best_state_dict, obs_dir / "qat_state_dict.pt")
     tokenizer.save_pretrained(obs_dir)
@@ -355,14 +455,23 @@ def train_qat_seed(
         json.dump({
             "source_fp32_checkpoint": str(fp32_ckpt),
             "seed": seed,
+            "precision": qat_precision,
             "best_val_weighted_f1": best_val_wf1,
-            "qconfig": "default_fake_quant / default_weight_fake_quant",
+            "qconfig": QAT_PRECISION_CONFIGS[qat_precision]["description"],
             "embeddings_excluded": True,
             "training_history": history,
         }, f, indent=2)
 
+    obs_log_path = obs_dir / "qat_observer_log.json"
+    with open(obs_log_path, "w", encoding="utf-8") as f:
+        json.dump(observer_stats, f, indent=2)
+    print(f"  Observer log saved -> {obs_log_path}")
+
     print(f"Saving clean checkpoint -> {clean_dir}")
     clean_state = strip_observers(best_state_dict)
+    ckpt_path = models_dir / f"qat_{qat_precision}_seed{seed}.pt"
+    torch.save(clean_state, ckpt_path)
+    print(f"  Named checkpoint saved -> {ckpt_path}")
     clean_model = AutoModelForSequenceClassification.from_pretrained(
         fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
     )
@@ -433,6 +542,7 @@ def train_qat_seed(
 
     results = {
         "seed": seed,
+        "qat_precision": qat_precision,
         "source_fp32_checkpoint": str(fp32_ckpt),
         "hyperparameters": {
             "epochs": epochs, "lr": lr, "weight_decay": weight_decay,
