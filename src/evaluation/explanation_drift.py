@@ -101,6 +101,87 @@ def bootstrap_mean_ci(
     hi = float(np.percentile(boot_means, 100 * (1 + ci) / 2))
     return lo, hi
 
+
+def _build_stratified_subsample(
+    test_csv: Path,
+    val_csv: Path,
+    n_total: int = 500,
+    min_per_class: int = 166,
+    seed: int = 42,
+) -> List[Tuple[int, str]]:
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    all_rows: List[Tuple[int, str, int]] = []
+
+    if test_csv.exists():
+        df = pd.read_csv(test_csv).dropna(subset=["text", "label"])
+        df["text"] = df["text"].astype(str).str.strip()
+        df = df[df["text"] != ""].reset_index(drop=True)
+        for idx, row in df.iterrows():
+            all_rows.append((int(idx), str(row["text"]), int(row["label"])))
+
+    n_test = len(all_rows)
+    if val_csv.exists():
+        df_val = pd.read_csv(val_csv).dropna(subset=["text", "label"])
+        df_val["text"] = df_val["text"].astype(str).str.strip()
+        df_val = df_val[df_val["text"] != ""].reset_index(drop=True)
+        for idx, row in df_val.iterrows():
+            all_rows.append((int(idx + n_test), str(row["text"]), int(row["label"])))
+
+    if not all_rows:
+        warnings.warn(f"No data found in {test_csv} or {val_csv}")
+        return []
+
+    by_label: dict = {}
+    for sid, text, label in all_rows:
+        by_label.setdefault(label, []).append((sid, text))
+
+    chosen_sids: set = set()
+    chosen: List[Tuple[int, str]] = []
+    for label, rows in sorted(by_label.items()):
+        n_draw = min(min_per_class, len(rows))
+        indices = rng.choice(len(rows), size=n_draw, replace=False)
+        for i in indices:
+            sid, text = rows[i]
+            if sid not in chosen_sids:
+                chosen.append((sid, text))
+                chosen_sids.add(sid)
+
+    remaining = [(sid, text) for sid, text, _ in all_rows if sid not in chosen_sids]
+    if remaining and len(chosen) < n_total:
+        perm = rng.permutation(len(remaining))
+        for i in perm:
+            if len(chosen) >= n_total:
+                break
+            sid, text = remaining[i]
+            if sid not in chosen_sids:
+                chosen.append((sid, text))
+                chosen_sids.add(sid)
+
+    return chosen[:n_total]
+
+def _scipy_bootstrap_ci(
+    values: List[float],
+    n_resamples: int = 2000,
+    confidence_level: float = 0.95,
+    seed: int = 42,
+) -> Tuple[float, float]:
+    from scipy.stats import bootstrap as _scipy_bootstrap
+    a = np.array([x for x in values if not np.isnan(x)], dtype=float)
+    if len(a) < 2:
+        return float("nan"), float("nan")
+    result = _scipy_bootstrap(
+        (a,),
+        np.mean,
+        n_resamples=n_resamples,
+        confidence_level=confidence_level,
+        method="percentile",
+        random_state=seed,
+    )
+    return float(result.confidence_interval.low), float(result.confidence_interval.high)
+
+
 def aggregate_explanation_drift(
     explanations_a: List[dict],
     explanations_b: List[dict],
@@ -235,19 +316,23 @@ def wilcoxon_drift_test(
 
 def run_stability_analysis():
     import pandas as pd
+    import json as _json
     from scipy.stats import wilcoxon as scipy_wilcoxon
     from scipy import stats as scipy_stats
+    from statsmodels.stats.multitest import multipletests
 
     _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-    _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
-    _RES_DIR       = _PROJECT_ROOT / "results"
+    _DATA_DIR  = _PROJECT_ROOT / "data" / "processed"
+    _TEST_CSV  = _DATA_DIR / "smsa_test_v2.csv"
+    _VAL_CSV   = _DATA_DIR / "smsa_val_v2.csv"
+    _OUT_DIR   = _PROJECT_ROOT / "results" / "attributions"
+    _RES_DIR   = _PROJECT_ROOT / "results"
 
-    if not _SUBSAMPLE_CSV.exists():
-        print(f"  [ERROR] Subsample CSV not found: {_SUBSAMPLE_CSV}")
+    samples = _build_stratified_subsample(_TEST_CSV, _VAL_CSV, n_total=500, min_per_class=166, seed=42)
+    if not samples:
+        print(f"  [ERROR] Could not build stratified subsample from {_TEST_CSV}")
         return
-    df_sub  = pd.read_csv(_SUBSAMPLE_CSV)
-    samples = [(int(row["sample_id"]), row["text"]) for _, row in df_sub.iterrows()]
+    print(f"  Stratified subsample: {len(samples)} samples")
 
     VARIANTS_7 = ["ptq_fp16", "ptq_int8", "ptq_int4", "qat_fp32",
                    "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4", "fp32_control"]
@@ -258,7 +343,7 @@ def run_stability_analysis():
         var_path  = _OUT_DIR / f"{method}_{vname}_{sid}.npy"
         if not fp32_path.exists() or not var_path.exists():
             return None
-        words = text.split()
+        words  = text.split()
         fp32_s = np.load(fp32_path).astype(np.float64)
         var_s  = np.load(var_path).astype(np.float64)
         L = min(len(words), len(fp32_s), len(var_s))
@@ -292,7 +377,7 @@ def run_stability_analysis():
         qat_path  = _OUT_DIR / f"ig_qat_ste_{sid}.npy"
         if not fp32_path.exists() or not qat_path.exists():
             continue
-        words = text.split()
+        words  = text.split()
         fp32_s = np.load(fp32_path).astype(np.float64)
         var_s  = np.load(qat_path).astype(np.float64)
         L = min(len(words), len(fp32_s), len(var_s))
@@ -319,9 +404,6 @@ def run_stability_analysis():
     df_per.to_csv(per_path, index=False, encoding="utf-8")
     print(f"\n  Saved {len(df_per)} rows -> {per_path}")
 
-    n_comparisons    = df_per.groupby(["method", "variant"]).ngroups
-    alpha_bonferroni = 0.05 / n_comparisons
-
     sum_rows = []
     for (method, vname), grp in df_per.groupby(["method", "variant"]):
         rhos = grp["spearman_rho"].dropna().tolist()
@@ -329,38 +411,134 @@ def run_stability_analysis():
         if len(rhos) < 2:
             continue
 
-        rho_lo, rho_hi = bootstrap_mean_ci(rhos)
-        j5_lo,  j5_hi  = bootstrap_mean_ci(j5s)
+        rho_lo, rho_hi = _scipy_bootstrap_ci(rhos, n_resamples=2000)
+        j5_lo,  j5_hi  = _scipy_bootstrap_ci(j5s,  n_resamples=2000)
 
         diffs = [r - 1.0 for r in rhos]
         try:
             w_stat, w_p = scipy_wilcoxon(diffs, alternative="less")
-            z         = scipy_stats.norm.ppf(w_p)
-            effect_r  = abs(z) / np.sqrt(len(rhos))
+            z        = scipy_stats.norm.ppf(w_p)
+            effect_r = abs(z) / np.sqrt(len(rhos))
         except ValueError:
             w_stat = w_p = effect_r = float("nan")
 
         sum_rows.append({
             "method": method, "variant": vname, "n": len(rhos),
-            "mean_rho":     round(float(np.mean(rhos)), 4),
-            "std_rho":      round(float(np.std(rhos)),  4),
-            "ci95_lo_rho":  round(rho_lo, 4),
-            "ci95_hi_rho":  round(rho_hi, 4),
-            "mean_j5":      round(float(np.mean(j5s)), 4),
-            "ci95_lo_j5":   round(j5_lo,  4),
-            "ci95_hi_j5":   round(j5_hi,  4),
-            "wilcoxon_stat":          round(w_stat,    4),
-            "wilcoxon_p":             round(w_p,       6),
-            "bonferroni_alpha":        round(alpha_bonferroni, 6),
-            "significant_bonferroni":  bool(w_p < alpha_bonferroni),
-            "effect_size_r":           round(effect_r,  4),
+            "mean_rho":      round(float(np.mean(rhos)), 4),
+            "std_rho":       round(float(np.std(rhos)),  4),
+            "ci95_lo_rho":   round(rho_lo, 4),
+            "ci95_hi_rho":   round(rho_hi, 4),
+            "mean_j5":       round(float(np.mean(j5s)), 4),
+            "ci95_lo_j5":    round(j5_lo,  4),
+            "ci95_hi_j5":    round(j5_hi,  4),
+            "wilcoxon_stat": round(w_stat,   4),
+            "wilcoxon_p":    round(w_p,      6),
+            "effect_size_r": round(effect_r, 4),
         })
 
     df_sum = pd.DataFrame(sum_rows)
+    n_comparisons = len(df_sum)
+
+    valid_ps = df_sum["wilcoxon_p"].fillna(1.0).tolist()
+    _, p_bonf, _, _ = multipletests(valid_ps, alpha=0.05, method="bonferroni")
+    df_sum["p_bonferroni"]           = [round(float(p), 6) for p in p_bonf]
+    df_sum["significant_bonferroni"] = df_sum["p_bonferroni"] < 0.05
+    df_sum["bonferroni_alpha"]       = round(0.05 / max(1, n_comparisons), 6)
+
     sum_path = _RES_DIR / "stability_summary.csv"
     df_sum.to_csv(sum_path, index=False, encoding="utf-8")
-    print(f"  Saved summary ({n_comparisons} comparisons, "
-          f"Bonferroni alpha={alpha_bonferroni:.5f}) -> {sum_path}")
+    print(f"  Saved summary ({n_comparisons} comparisons) -> {sum_path}")
+
+    PTQ_QAT_PAIRS = [
+        ("ptq_fp16", "qat_onnx_fp16"),
+        ("ptq_int8", "qat_onnx_int8"),
+        ("ptq_int4", "qat_onnx_int4"),
+    ]
+    ptq_qat_rows = []
+    for method in METHODS:
+        for ptq_v, qat_v in PTQ_QAT_PAIRS:
+            ptq_grp = df_per[(df_per["method"] == method) & (df_per["variant"] == ptq_v)]
+            qat_grp = df_per[(df_per["method"] == method) & (df_per["variant"] == qat_v)]
+            merged  = ptq_grp.merge(qat_grp, on="sample_id", suffixes=("_ptq", "_qat"))
+            n_paired = int(len(merged.dropna(subset=["spearman_rho_ptq", "spearman_rho_qat"])))
+            if n_paired < 10:
+                ptq_qat_rows.append({
+                    "method": method, "ptq_variant": ptq_v, "qat_variant": qat_v,
+                    "n_paired": n_paired,
+                    "wilcoxon_stat": float("nan"), "wilcoxon_p": float("nan"),
+                    "p_bonferroni": float("nan"), "significant": False,
+                })
+                continue
+            diffs = (merged["spearman_rho_ptq"].values
+                     - merged["spearman_rho_qat"].values)
+            diffs = diffs[~np.isnan(diffs)]
+            try:
+                w_stat, w_p = scipy_wilcoxon(diffs)
+            except ValueError:
+                w_stat, w_p = float("nan"), float("nan")
+            ptq_qat_rows.append({
+                "method": method, "ptq_variant": ptq_v, "qat_variant": qat_v,
+                "n_paired": n_paired,
+                "wilcoxon_stat": round(float(w_stat), 4),
+                "wilcoxon_p":    round(float(w_p),    6),
+                "p_bonferroni": float("nan"), "significant": False,
+            })
+
+    pq_ps = [r["wilcoxon_p"] if not np.isnan(r["wilcoxon_p"]) else 1.0
+              for r in ptq_qat_rows]
+    if pq_ps:
+        _, pq_bonf, _, _ = multipletests(pq_ps, alpha=0.05, method="bonferroni")
+        for i, row in enumerate(ptq_qat_rows):
+            row["p_bonferroni"] = round(float(pq_bonf[i]), 6)
+            row["significant"]  = bool(pq_bonf[i] < 0.05)
+
+    df_pq = pd.DataFrame(ptq_qat_rows)
+    pq_path = _RES_DIR / "ptq_vs_qat_wilcoxon.csv"
+    df_pq.to_csv(pq_path, index=False, encoding="utf-8")
+    print(f"  Saved PTQ vs QAT Wilcoxon -> {pq_path}")
+
+    cross_seed_samples = _build_stratified_subsample(
+        _TEST_CSV, _VAL_CSV, n_total=150, min_per_class=50, seed=0
+    )
+    SEED_PAIRS = [(42, 123), (42, 456), (123, 456)]
+    cross_seed_rows = []
+    for method in METHODS:
+        for seed_a, seed_b in SEED_PAIRS:
+            rho_vals = []
+            for sid, text in cross_seed_samples:
+                p_a = _OUT_DIR / f"{method}_fp32_s{seed_a}_{sid}.npy"
+                p_b = _OUT_DIR / f"{method}_fp32_s{seed_b}_{sid}.npy"
+                if not p_a.exists() or not p_b.exists():
+                    continue
+                words = text.split()
+                s_a = np.load(p_a).astype(np.float64)
+                s_b = np.load(p_b).astype(np.float64)
+                L = min(len(words), len(s_a), len(s_b))
+                if L < 3:
+                    continue
+                rho, _ = spearman_rank_correlation(
+                    words[:L], s_a[:L].tolist(), words[:L], s_b[:L].tolist()
+                )
+                if not np.isnan(rho):
+                    rho_vals.append(rho)
+            if rho_vals:
+                ci_lo, ci_hi = _scipy_bootstrap_ci(rho_vals, n_resamples=2000)
+            else:
+                ci_lo = ci_hi = float("nan")
+            cross_seed_rows.append({
+                "method":      method,
+                "seed_a":      seed_a,
+                "seed_b":      seed_b,
+                "n":           len(rho_vals),
+                "mean_rho":    round(float(np.nanmean(rho_vals)), 4) if rho_vals else float("nan"),
+                "ci95_lo_rho": round(ci_lo, 4),
+                "ci95_hi_rho": round(ci_hi, 4),
+            })
+
+    df_cross = pd.DataFrame(cross_seed_rows)
+    cross_path = _RES_DIR / "cross_seed_stability.csv"
+    df_cross.to_csv(cross_path, index=False, encoding="utf-8")
+    print(f"  Saved cross-seed stability ({len(cross_seed_samples)} samples) -> {cross_path}")
 
     floor_rows = []
     for method in METHODS:
@@ -369,23 +547,26 @@ def run_stability_analysis():
             rand_files = sorted(_OUT_DIR.glob(f"random_{sid}_*.npy"))
             if not fp32_path.exists() or not rand_files:
                 continue
-            words  = text.split()
-            fp32_s = np.load(fp32_path).astype(np.float64)
-            L      = min(len(words), len(fp32_s))
-            fp32_l = fp32_s[:L].tolist()
+            words   = text.split()
+            fp32_s  = np.load(fp32_path).astype(np.float64)
+            L       = min(len(words), len(fp32_s))
+            fp32_l  = fp32_s[:L].tolist()
             words_l = words[:L]
             rho_vals, j5_vals = [], []
             for rf in rand_files:
                 rand_s = np.load(rf).astype(np.float64)
-                Lr = min(L, len(rand_s))
+                Lr     = min(L, len(rand_s))
                 rand_l = rand_s[:Lr].tolist()
                 rho, _ = spearman_rank_correlation(words_l, fp32_l, words_l[:Lr], rand_l)
                 j5     = top_k_jaccard(words_l, fp32_l, words_l[:Lr], rand_l, k=5)
                 rho_vals.append(rho)
                 j5_vals.append(j5)
-            floor_rows.append({"method": method, "sample_id": sid,
-                                "floor_mean_rho": round(float(np.nanmean(rho_vals)), 4),
-                                "floor_mean_j5":  round(float(np.nanmean(j5_vals)),  4)})
+            floor_rows.append({
+                "method":         method,
+                "sample_id":      sid,
+                "floor_mean_rho": round(float(np.nanmean(rho_vals)), 4),
+                "floor_mean_j5":  round(float(np.nanmean(j5_vals)),  4),
+            })
 
     df_floor = pd.DataFrame(floor_rows)
     floor_path = _RES_DIR / "stability_random_floor.csv"
@@ -393,42 +574,93 @@ def run_stability_analysis():
     print(f"  Saved random floor -> {floor_path}")
 
     _DISPLAY = {"fp32_control": "FP32-Control"}
-
     print(f"\n  {'method':5s}  {'variant':22s}  {'rho':>6s} [95% CI]        "
           f"{'J@5':>5s}  {'r':>5s}  sig?")
     for _, row in df_sum.sort_values(["method", "mean_rho"]).iterrows():
-        sig = "*" if row["significant_bonferroni"] else " "
+        sig   = "*" if row["significant_bonferroni"] else " "
         label = _DISPLAY.get(row["variant"], row["variant"])
         print(f"  {row['method']:5s}  {label:22s}  "
               f"{row['mean_rho']:6.3f} [{row['ci95_lo_rho']:.3f},{row['ci95_hi_rho']:.3f}]  "
               f"{row['mean_j5']:5.3f}  {row['effect_size_r']:5.3f}  {sig}")
 
-    import json as _json
+    stability_v2: dict = {
+        "_meta": {
+            "n_samples":             len(samples),
+            "n_cross_seed_samples":  len(cross_seed_samples),
+            "bootstrap_n_resamples": 2000,
+            "bonferroni_method":     "statsmodels.multipletests",
+        },
+        "stability_per_variant": {},
+        "ptq_vs_qat_wilcoxon":   {},
+        "cross_seed":            {},
+    }
+
+    for _, row in df_sum.iterrows():
+        variant = str(row["variant"])
+        method  = str(row["method"])
+        stability_v2["stability_per_variant"].setdefault(variant, {})[method] = {
+            "n":                      int(row["n"]),
+            "mean_rho":               float(row["mean_rho"]),
+            "std_rho":                float(row["std_rho"]),
+            "ci95_lo_rho":            float(row["ci95_lo_rho"]),
+            "ci95_hi_rho":            float(row["ci95_hi_rho"]),
+            "mean_j5":                float(row["mean_j5"]),
+            "ci95_lo_j5":             float(row["ci95_lo_j5"]),
+            "ci95_hi_j5":             float(row["ci95_hi_j5"]),
+            "wilcoxon_p":             float(row["wilcoxon_p"]),
+            "p_bonferroni":           float(row["p_bonferroni"]),
+            "significant_bonferroni": bool(row["significant_bonferroni"]),
+            "effect_size_r":          float(row["effect_size_r"]),
+        }
+
+    for _, row in df_pq.iterrows():
+        key    = f"{row['ptq_variant']}_vs_{row['qat_variant']}"
+        method = str(row["method"])
+        stability_v2["ptq_vs_qat_wilcoxon"].setdefault(key, {})[method] = {
+            "n_paired":      int(row["n_paired"]),
+            "wilcoxon_stat": float(row["wilcoxon_stat"]),
+            "wilcoxon_p":    float(row["wilcoxon_p"]),
+            "p_bonferroni":  float(row["p_bonferroni"]),
+            "significant":   bool(row["significant"]),
+        }
+
+    for _, row in df_cross.iterrows():
+        key    = f"seed{int(row['seed_a'])}_vs_seed{int(row['seed_b'])}"
+        method = str(row["method"])
+        stability_v2["cross_seed"].setdefault(key, {})[method] = {
+            "n":           int(row["n"]),
+            "mean_rho":    None if np.isnan(row["mean_rho"])    else float(row["mean_rho"]),
+            "ci95_lo_rho": None if np.isnan(row["ci95_lo_rho"]) else float(row["ci95_lo_rho"]),
+            "ci95_hi_rho": None if np.isnan(row["ci95_hi_rho"]) else float(row["ci95_hi_rho"]),
+        }
+
+    json_v2_path = _RES_DIR / "stability_results_v2.json"
+    with open(json_v2_path, "w", encoding="utf-8") as _f:
+        _json.dump(stability_v2, _f, indent=2)
+    print(f"\n  stability_results_v2.json saved -> {json_v2_path}")
 
     stability_json: dict = {}
     for _, row in df_sum.iterrows():
         variant = str(row["variant"])
         method  = str(row["method"])
-        if variant not in stability_json:
-            stability_json[variant] = {}
-        stability_json[variant][method] = {
-            "n":                        int(row["n"]),
-            "mean_rho":                 float(row["mean_rho"]),
-            "std_rho":                  float(row["std_rho"]),
-            "ci95_lo_rho":              float(row["ci95_lo_rho"]),
-            "ci95_hi_rho":              float(row["ci95_hi_rho"]),
-            "mean_j5":                  float(row["mean_j5"]),
-            "ci95_lo_j5":               float(row["ci95_lo_j5"]),
-            "ci95_hi_j5":               float(row["ci95_hi_j5"]),
-            "wilcoxon_p":               float(row["wilcoxon_p"]),
-            "significant_bonferroni":   bool(row["significant_bonferroni"]),
-            "effect_size_r":            float(row["effect_size_r"]),
+        stability_json.setdefault(variant, {})[method] = {
+            "n":                      int(row["n"]),
+            "mean_rho":               float(row["mean_rho"]),
+            "std_rho":                float(row["std_rho"]),
+            "ci95_lo_rho":            float(row["ci95_lo_rho"]),
+            "ci95_hi_rho":            float(row["ci95_hi_rho"]),
+            "mean_j5":                float(row["mean_j5"]),
+            "ci95_lo_j5":             float(row["ci95_lo_j5"]),
+            "ci95_hi_j5":             float(row["ci95_hi_j5"]),
+            "wilcoxon_p":             float(row["wilcoxon_p"]),
+            "significant_bonferroni": bool(row["significant_bonferroni"]),
+            "effect_size_r":          float(row["effect_size_r"]),
         }
 
     json_path = _RES_DIR / "stability_results.json"
     with open(json_path, "w", encoding="utf-8") as _f:
         _json.dump(stability_json, _f, indent=2)
-    print(f"\n  Stability results JSON saved -> {json_path}")
+    print(f"  Stability results JSON saved -> {json_path}")
 
     if "fp32_control" in stability_json:
         ctrl = stability_json["fp32_control"]
@@ -457,7 +689,7 @@ def compute_power_analysis():
 
     df = pd.read_csv(per_path)
     Z = 2.487
-    n = 50
+    n = 500
     power_rows = []
     print(f"\n  Power analysis (alpha=0.05, power=0.80, n={n}):")
     print(f"  {'method':5s}  {'observed_sd':>11s}  {'min_detectable_delta_rho':>24s}")
