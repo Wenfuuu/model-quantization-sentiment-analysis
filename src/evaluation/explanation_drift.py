@@ -314,6 +314,41 @@ def wilcoxon_drift_test(
         ),
     }
 
+def bootstrap_spearman(vec_a, vec_b, n_resamples: int = 2000, ci: float = 0.95) -> dict:
+    from scipy.stats import spearmanr
+    rng = np.random.default_rng(42)
+    n = len(vec_a)
+    boot = [spearmanr(vec_a[idx := rng.integers(0, n, n)], vec_b[idx]).statistic
+            for _ in range(n_resamples)]
+    alpha = (1 - ci) / 2
+    return {
+        "rho":      float(spearmanr(vec_a, vec_b).statistic),
+        "ci_low":   float(np.quantile(boot, alpha)),
+        "ci_high":  float(np.quantile(boot, 1 - alpha)),
+        "n":        n,
+    }
+
+
+def wilcoxon_bonferroni(rho_pairs: list) -> list:
+    from scipy.stats import wilcoxon
+    from statsmodels.stats.multitest import multipletests
+
+    raw = []
+    for name_a, name_b, a, b in rho_pairs:
+        try:
+            stat, p = wilcoxon(a, b, alternative="two-sided")
+        except ValueError:
+            stat, p = float("nan"), float("nan")
+        raw.append({"pair": f"{name_a}_vs_{name_b}", "W": float(stat), "p_raw": float(p)})
+
+    pvals = [r["p_raw"] if not np.isnan(r["p_raw"]) else 1.0 for r in raw]
+    if pvals:
+        _, pcorr, _, _ = multipletests(pvals, method="bonferroni")
+        for r, pc in zip(raw, pcorr):
+            r["p_bonferroni"] = float(pc)
+            r["significant"]  = bool(pc < 0.05)
+    return raw
+
 def run_stability_analysis():
     import pandas as pd
     import json as _json
@@ -334,9 +369,50 @@ def run_stability_analysis():
         return
     print(f"  Stratified subsample: {len(samples)} samples")
 
+    try:
+        import pandas as _pd_idx
+        _test_df  = _pd_idx.read_csv(_TEST_CSV).dropna(subset=["text", "label"])
+        _val_df   = _pd_idx.read_csv(_VAL_CSV).dropna(subset=["text", "label"])
+        _n_test   = len(_test_df)
+        _lmap     = {0: "pos", 1: "neu", 2: "neg"}
+        _class_counts = {"pos": 0, "neu": 0, "neg": 0}
+        _test_ids, _val_ids = [], []
+        for _sid, _ in samples:
+            if _sid < _n_test:
+                _test_ids.append(_sid)
+                _lbl = int(_test_df.iloc[_sid]["label"])
+                _class_counts[_lmap.get(_lbl, str(_lbl))] = _class_counts.get(_lmap.get(_lbl, str(_lbl)), 0) + 1
+            else:
+                _val_ids.append(_sid - _n_test)
+                _lbl = int(_val_df.iloc[_sid - _n_test]["label"])
+                _class_counts[_lmap.get(_lbl, str(_lbl))] = _class_counts.get(_lmap.get(_lbl, str(_lbl)), 0) + 1
+        _idx_path = _RES_DIR / "eval_sample_indices.json"
+        _idx_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(_idx_path, "w", encoding="utf-8") as _f:
+            import json as _json_idx
+            _json_idx.dump({"test_indices": _test_ids, "val_indices": _val_ids,
+                            "class_counts": _class_counts}, _f, indent=2)
+        print(f"  Sample indices saved -> {_idx_path}  "
+              f"(test={len(_test_ids)}, val={len(_val_ids)}, "
+              f"classes={_class_counts})")
+    except Exception as _e:
+        print(f"  [WARN] Could not save eval_sample_indices.json: {_e}")
+
     VARIANTS_7 = ["ptq_fp16", "ptq_int8", "ptq_int4", "qat_fp32",
                    "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4", "fp32_control"]
     METHODS = ["lime", "occ", "shap"]
+
+    _VARIANT_LABEL = {
+        "ptq_fp16":       "PTQ-FP16",
+        "ptq_int8":       "PTQ-INT8",
+        "ptq_int4":       "PTQ-INT4",
+        "qat_fp32":       "QAT-FP32",
+        "qat_onnx_fp16":  "QAT-ONNX-FP16",
+        "qat_onnx_int8":  "QAT-ONNX-INT8",
+        "qat_onnx_int4":  "QAT-ONNX-INT4",
+        "fp32_control":   "FP32-Control",
+        "qat_ste":        "QAT-STE",
+    }
 
     def _load_pair(method, vname, sid, text):
         fp32_path = _OUT_DIR / f"{method}_fp32_{sid}.npy"
@@ -350,7 +426,9 @@ def run_stability_analysis():
         return words[:L], fp32_s[:L].tolist(), var_s[:L].tolist()
 
     per_rows = []
-    n_found = 0
+    n_found  = 0
+    _raw_fp32: dict = {v: [] for v in VARIANTS_7 + ["qat_ste"]}
+    _raw_var:  dict = {v: [] for v in VARIANTS_7 + ["qat_ste"]}
 
     for method in METHODS:
         for vname in VARIANTS_7:
@@ -368,6 +446,8 @@ def run_stability_analysis():
                                       "spearman_rho": rho,
                                       "jaccard_k3": j3, "jaccard_k5": j5, "jaccard_k10": j10})
                     n_found += 1
+                    _raw_fp32[vname].extend(fp32_l)
+                    _raw_var[vname].extend(var_l)
             print(f"  {method:5s} x {vname:20s}: {n_found} samples found")
             n_found = 0
 
@@ -393,6 +473,8 @@ def run_stability_analysis():
                               "spearman_rho": rho,
                               "jaccard_k3": j3, "jaccard_k5": j5, "jaccard_k10": j10})
             ig_found += 1
+            _raw_fp32["qat_ste"].extend(fp32_l)
+            _raw_var["qat_ste"].extend(var_l)
     print(f"  ig    x qat_ste             : {ig_found} samples")
 
     if not per_rows:
@@ -673,6 +755,74 @@ def run_stability_analysis():
             f"(expected: results/attributions/{{method}}_fp32_control_{{sid}}.npy). "
             "Run the XAI pipeline on fp32_control_seed{{seed}} checkpoints first."
         )
+
+    all_variant_keys = [v for v in (list(VARIANTS_7) + ["qat_ste"])
+                        if len(_raw_fp32.get(v, [])) >= 10]
+
+    _variants_out: dict = {}
+    for vname in all_variant_keys:
+        _a = np.array(_raw_fp32[vname])
+        _b = np.array(_raw_var[vname])
+        _bs = bootstrap_spearman(_a, _b, n_resamples=2000, ci=0.95)
+        _label = _VARIANT_LABEL.get(vname, vname)
+        _variants_out[_label] = _bs
+
+    _rho_by_variant: dict = {}
+    for vname in all_variant_keys:
+        _label = _VARIANT_LABEL.get(vname, vname)
+        _grp = df_per[df_per["variant"] == vname][["sample_id", "spearman_rho"]]
+        _rho_by_variant[_label] = dict(zip(_grp["sample_id"], _grp["spearman_rho"]))
+
+    from itertools import combinations as _combs
+    _rho_pairs = []
+    for _la, _lb in _combs(list(_rho_by_variant.keys()), 2):
+        _shared = set(_rho_by_variant[_la]) & set(_rho_by_variant[_lb])
+        if len(_shared) < 10:
+            continue
+        _sids = sorted(_shared)
+        _ra = [_rho_by_variant[_la][s] for s in _sids]
+        _rb = [_rho_by_variant[_lb][s] for s in _sids]
+        _rho_pairs.append((_la, _lb, _ra, _rb))
+
+    _pairwise_out = wilcoxon_bonferroni(_rho_pairs) if _rho_pairs else []
+
+    _sample_source = {"test": len(_test_ids) if "_test_ids" in dir() else 0,
+                      "val":  len(_val_ids)  if "_val_ids"  in dir() else 0}
+
+    _full_stats = {
+        "variants":       _variants_out,
+        "pairwise_tests": _pairwise_out,
+        "n_eval":         len(samples),
+        "n_cross_seed":   len(cross_seed_samples),
+        "sample_source":  _sample_source,
+    }
+    _full_path = _RES_DIR / "stability_full_stats.json"
+    with open(_full_path, "w", encoding="utf-8") as _f:
+        _json.dump(_full_stats, _f, indent=2)
+    print(f"\n  stability_full_stats.json saved -> {_full_path}")
+
+    _table_rows = []
+    for _label, _bs in _variants_out.items():
+        _vname = next((k for k, v in _VARIANT_LABEL.items() if v == _label), _label)
+        _grp = df_per[df_per["variant"] == _vname]
+        _rhos_all = _grp["spearman_rho"].dropna().tolist()
+        _j5_all   = _grp["jaccard_k5"].dropna().tolist()
+        _pw = next((r for r in _pairwise_out if _label in r["pair"]), {})
+        _table_rows.append({
+            "variant":        _label,
+            "n":              _bs["n"],
+            "rho":            round(_bs["rho"], 4),
+            "ci_low":         round(_bs["ci_low"], 4),
+            "ci_high":        round(_bs["ci_high"], 4),
+            "mean_rho_per_sample": round(float(np.mean(_rhos_all)), 4) if _rhos_all else float("nan"),
+            "std_rho":        round(float(np.std(_rhos_all)), 4) if _rhos_all else float("nan"),
+            "mean_j5":        round(float(np.mean(_j5_all)), 4) if _j5_all else float("nan"),
+        })
+
+    import pandas as _pd_tbl
+    _tbl_path = _RES_DIR / "stability_table.csv"
+    _pd_tbl.DataFrame(_table_rows).to_csv(_tbl_path, index=False, encoding="utf-8")
+    print(f"  stability_table.csv saved -> {_tbl_path}")
 
     compute_power_analysis()
 
