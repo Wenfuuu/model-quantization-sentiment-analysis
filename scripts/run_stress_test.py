@@ -25,6 +25,9 @@ from linguistic_probes import (
     get_all_probes,
     get_probe_samples,
     probe_accuracy_by_phenomenon,
+    remap_to_8_categories,
+    PHENOMENON_8,
+    save_probe_pairs_json,
 )
 
 warnings.filterwarnings("ignore")
@@ -36,7 +39,6 @@ TEST_LABELS = {
     "calibration": "Calibration Under Stress (ECE)",
     "linguistic_probes": "Linguistic Probe Accuracy (PSR)",
 }
-
 
 def _build_models(base_model):
     print_section("PREPARING QUANTIZED MODELS")
@@ -97,6 +99,146 @@ def _run_quick_evaluation(models, test_samples, use_fp16_map):
 
     return all_predictions
 
+
+def compute_psr_per_phenomenon(res_dir: Path, probe_phenomenon_map: dict) -> None:
+    import numpy as np
+    import pandas as pd
+    from scipy.stats import binom as _binom_sc
+    from statsmodels.stats.multitest import multipletests
+
+    pred_path = res_dir / "probe_predictions_allseeds.csv"
+    if not pred_path.exists():
+        print(f"  [WARN] {pred_path} not found — cannot compute per-phenomenon PSR.")
+        return
+
+    df = pd.read_csv(pred_path)
+    df["correct"]      = (df["predicted"] == df["expected"]).astype(int)
+    df["phenomenon_8"] = df["text"].map(probe_phenomenon_map)
+    df = df[df["phenomenon_8"].notna()].copy()
+
+    phenomena_8 = [p for p in PHENOMENON_8 if p in df["phenomenon_8"].values]
+    variants     = sorted(df["precision"].unique().tolist())
+    non_fp32     = [v for v in variants if v != "fp32"]
+
+    matrix: dict = {}
+    for phenom in phenomena_8:
+        matrix[phenom] = {}
+        ph_df = df[df["phenomenon_8"] == phenom]
+        for variant in variants:
+            v_df = ph_df[ph_df["precision"] == variant]
+            n  = len(v_df)
+            nc = int(v_df["correct"].sum())
+            matrix[phenom][variant] = {
+                "psr":       round(nc / n, 4) if n > 0 else float("nan"),
+                "n":         n,
+                "n_correct": nc,
+            }
+
+    mcnemar_rows: list = []
+    for phenom in phenomena_8:
+        ph_df   = df[df["phenomenon_8"] == phenom]
+        fp32_df = (ph_df[ph_df["precision"] == "fp32"]
+                   .set_index(["seed", "text"]))
+
+        for variant in non_fp32:
+            var_df = (ph_df[ph_df["precision"] == variant]
+                      .set_index(["seed", "text"]))
+            common = fp32_df.index.intersection(var_df.index)
+            if len(common) < 4:
+                mcnemar_rows.append({
+                    "phenomenon": phenom, "variant": variant,
+                    "n": len(common),
+                    "n00": 0, "n01": 0, "n10": 0, "n11": 0,
+                    "p_mcnemar": float("nan"), "p_bonferroni": float("nan"),
+                    "significant": False,
+                })
+                continue
+
+            fp_c = fp32_df.loc[common, "correct"].values
+            vr_c = var_df.loc[common,  "correct"].values
+            n00 = int(((fp_c == 1) & (vr_c == 1)).sum())
+            n01 = int(((fp_c == 1) & (vr_c == 0)).sum())  
+            n10 = int(((fp_c == 0) & (vr_c == 1)).sum())
+            n11 = int(((fp_c == 0) & (vr_c == 0)).sum())
+            n_disc = n01 + n10
+            p_mc = float(_binom_sc.sf(n01 - 1, n_disc, 0.5)) if n_disc > 0 else 1.0
+            mcnemar_rows.append({
+                "phenomenon": phenom, "variant": variant,
+                "n": len(common),
+                "n00": n00, "n01": n01, "n10": n10, "n11": n11,
+                "p_mcnemar":    round(p_mc, 6),
+                "p_bonferroni": float("nan"),
+                "significant":  False,
+            })
+
+    n_bonf  = len(phenomena_8) * max(1, len(non_fp32))
+    raw_ps  = [r["p_mcnemar"] if not np.isnan(r["p_mcnemar"]) else 1.0
+               for r in mcnemar_rows]
+    if raw_ps:
+        _, p_bonf_arr, _, _ = multipletests(raw_ps, alpha=0.05, method="bonferroni")
+        for i, row in enumerate(mcnemar_rows):
+            row["p_bonferroni"] = round(float(p_bonf_arr[i]), 6)
+            row["significant"]  = bool(p_bonf_arr[i] < 0.05)
+
+    for row in mcnemar_rows:
+        ph, vr = row["phenomenon"], row["variant"]
+        matrix[ph][vr].update({
+            "p_mcnemar":    row["p_mcnemar"],
+            "p_bonferroni": row["p_bonferroni"],
+            "significant":  row["significant"],
+            "n00": row["n00"], "n01": row["n01"],
+            "n10": row["n10"], "n11": row["n11"],
+        })
+
+    psr_json = {
+        "_meta": {
+            "n_phenomena":        len(phenomena_8),
+            "phenomena":          phenomena_8,
+            "n_variants":         len(variants),
+            "variants":           variants,
+            "n_bonferroni_tests": n_bonf,
+            "test_method":        "exact one-sided McNemar (scipy.stats.binom.sf)",
+            "bonferroni_method":  "statsmodels.multipletests",
+            "note": ("FP32 cells have no McNemar result (reference). "
+                     "Significance: quantization hurts performance on this phenomenon."),
+        },
+        "matrix": matrix,
+    }
+    json_path = res_dir / "psr_per_phenomenon.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(psr_json, f, indent=2, ensure_ascii=False)
+    print(f"  Saved psr_per_phenomenon.json -> {json_path}")
+
+    csv_rows = []
+    for phenom in phenomena_8:
+        row_d = {"phenomenon": phenom}
+        for variant in variants:
+            cell  = matrix.get(phenom, {}).get(variant, {})
+            psr_v = cell.get("psr", float("nan"))
+            sig   = cell.get("significant", False)
+            if psr_v is None or (isinstance(psr_v, float) and np.isnan(psr_v)):
+                row_d[variant] = "n/a"
+            else:
+                row_d[variant] = f"{psr_v:.3f}{'*' if sig else ''}"
+        csv_rows.append(row_d)
+
+    df_table = pd.DataFrame(csv_rows)
+    csv_path = res_dir / "psr_table.csv"
+    df_table.to_csv(csv_path, index=False, encoding="utf-8")
+    print(f"  Saved psr_table.csv -> {csv_path}")
+
+    col_w = max(len(v) for v in variants) + 2
+    print(f"\n  PSR per phenomenon (8×{len(variants)} matrix, * = Bonferroni-significant):")
+    print(f"  {'phenomenon':18s}" + "".join(f"  {v:>{col_w}s}" for v in variants))
+    for phenom in phenomena_8:
+        row_str = f"  {phenom:18s}"
+        for v in variants:
+            cell  = matrix.get(phenom, {}).get(v, {})
+            psr_v = cell.get("psr", float("nan"))
+            sig   = "*" if cell.get("significant", False) else " "
+            val   = f"{psr_v:.3f}{sig}" if not (isinstance(psr_v, float) and np.isnan(psr_v)) else "  n/a "
+            row_str += f"  {val:>{col_w}s}"
+        print(row_str)
 
 def run_stress_test_experiment(version_key, tests=None):
     if tests is None:
@@ -280,6 +422,14 @@ def run_stress_test_experiment(version_key, tests=None):
         _ci_means = _df_psr.groupby("precision")[["ci_low", "ci_high"]].mean().reset_index()
         _summary.merge(_ci_means, on="precision").to_csv(_res_dir / "probe_psr_summary.csv", index=False)
         print(f"\n  Saved probe CSVs to {_res_dir}")
+
+        _probe_pairs_path = Path(__file__).resolve().parent.parent / "data" / "probe_pairs.json"
+        _n_entries = save_probe_pairs_json(_probe_pairs_path)
+        print(f"  probe_pairs.json: {_n_entries} entries -> {_probe_pairs_path}")
+
+        _phenom_map = {p.text: remap_to_8_categories(p) for p in probes}
+        compute_psr_per_phenomenon(_res_dir, _phenom_map)
+
         all_results["linguistic_probes"] = _all_seed_results
 
     print_section("STRESS TEST COMPLETED")

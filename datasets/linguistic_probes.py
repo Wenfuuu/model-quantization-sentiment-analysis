@@ -24,6 +24,26 @@ PHENOMENON_CATEGORIES = {
     "hedging":            "Epistemic hedging (mungkin, sepertinya, kayaknya)",
 }
 
+PHENOMENON_8: Dict[str, str] = {
+    "verbal_neg":      "Verbal negation (tidak, tak, belum, jangan)",
+    "nominal_neg":     "Nominal negation (bukan)",
+    "double_neg":      "Double negation resolving to positive",
+    "scope_neg":       "Scope-sensitive negation (tidak semua vs semua tidak)",
+    "scalar_intens":   "Scalar intensifiers (sangat, sekali, banget, amat)",
+    "reduplication":   "Morphological reduplication",
+    "contrastive":     "Contrastive discourse markers (tapi, namun, walaupun, meskipun)",
+    "epistemic_hedge": "Epistemic hedging (mungkin, sepertinya, kayaknya)",
+}
+
+_PHENOM_8_REMAP: Dict[str, str] = {
+    "intensifier":     "scalar_intens",
+    "reduplication":   "reduplication",
+    "contrastive":     "contrastive",
+    "double_negation": "double_neg",
+    "scope_negation":  "scope_neg",
+    "hedging":         "epistemic_hedge",
+}
+
 PROBE_SET: List[LinguisticProbe] = [
 
     #  NEGATION 
@@ -284,6 +304,49 @@ def get_probes_by_phenomenon(phenomenon: str) -> List[LinguisticProbe]:
 def get_all_probes() -> List[LinguisticProbe]:
     return _load_probe_set()
 
+def remap_to_8_categories(probe: LinguisticProbe) -> str:
+    if probe.phenomenon == "negation":
+        return "nominal_neg" if "bukan" in probe.phenomenon_tokens else "verbal_neg"
+    return _PHENOM_8_REMAP.get(probe.phenomenon, probe.phenomenon)
+
+def get_phenomenon_8_map() -> Dict[str, str]:
+    return {p.text: remap_to_8_categories(p) for p in _load_probe_set()}
+
+def save_probe_pairs_json(output_path: Path) -> int:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for probe in _load_probe_set():
+        phenom_8 = remap_to_8_categories(probe)
+        base_id = len(entries)
+        entries.append({
+            "id":                base_id,
+            "text":              probe.text,
+            "expected_label":    probe.expected_label,
+            "phenomenon":        phenom_8,
+            "phenomenon_tokens": probe.phenomenon_tokens,
+            "description":       probe.description,
+            "minimal_pair":      probe.minimal_pair,
+            "is_minimal_pair":   False,
+            "source":            probe.source,
+            "expected_direction": probe.expected_direction,
+        })
+        if probe.minimal_pair:
+            entries.append({
+                "id":                base_id + 1,
+                "text":              probe.minimal_pair,
+                "expected_label":    probe.expected_label,
+                "phenomenon":        phenom_8,
+                "phenomenon_tokens": probe.phenomenon_tokens,
+                "description":       f"[MINIMAL PAIR] {probe.description}",
+                "minimal_pair":      None,
+                "is_minimal_pair":   True,
+                "source":            probe.source,
+                "expected_direction": probe.expected_direction,
+            })
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+    return len(entries)
 
 def get_probe_samples(include_minimal_pairs: bool = False) -> List[dict]:
     samples = []
