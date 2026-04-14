@@ -525,7 +525,9 @@ class _OnnxTorchAdapter:
         r.logits = _torch.tensor(logits_np, dtype=_torch.float32)
         return r
 
-def run_faithfulness_evaluation():
+def run_faithfulness_evaluation(
+    k_values: Tuple[int, ...] = (3, 5, 10, 15),
+) -> None:
     import pandas as pd
     from src.models import ModelManager
     from src.models.base import BaseModel, OnnxBaseModel
@@ -597,7 +599,8 @@ def run_faithfulness_evaluation():
                 device = model.device
 
             evaluator = FaithfulnessEvaluator(
-                infer_model, fp32_base.tokenizer, device=device, k_values=(5,)
+                infer_model, fp32_base.tokenizer, device=device,
+                k_values=k_values,
             )
 
             n_found = 0
@@ -617,15 +620,24 @@ def run_faithfulness_evaluation():
                         text, words[:L], scores[:L].tolist(),
                         method=method, precision=vname, token_level="word",
                     )
-                    fk = result.per_k[5]
-                    per_rows.append({
-                        "method": method, "variant": vname, "sample_id": sid,
-                        "orig_conf": round(fk.original_confidence, 4),
-                        "suff":      fk.sufficiency       if not np.isnan(fk.sufficiency)       else float("nan"),
-                        "comp":      fk.comprehensiveness if not np.isnan(fk.comprehensiveness) else float("nan"),
-                        "n_content": fk.n_content_tokens,
-                        "k":         fk.k,
-                    })
+                    for k_val in k_values:
+                        if k_val not in result.per_k:
+                            continue
+                        fk = result.per_k[k_val]
+                        per_rows.append({
+                            "method":    method,
+                            "variant":   vname,
+                            "sample_id": sid,
+                            "k":         k_val,
+                            "orig_conf": round(fk.original_confidence, 4),
+                            "suff":      (fk.sufficiency
+                                          if not np.isnan(fk.sufficiency)
+                                          else float("nan")),
+                            "comp":      (fk.comprehensiveness
+                                          if not np.isnan(fk.comprehensiveness)
+                                          else float("nan")),
+                            "n_content": fk.n_content_tokens,
+                        })
                     n_found += 1
                 except Exception as exc:
                     print(f"  [ERR] {method} {vname} sid={sid}: {exc}")
@@ -642,9 +654,12 @@ def run_faithfulness_evaluation():
     print(f"\n  Saved {len(df_per)} rows -> {per_path}")
 
     sum_rows = []
-    for (method, vname), grp in df_per.groupby(["method", "variant"]):
+    for (method, vname, k_val), grp in df_per.groupby(["method", "variant", "k"]):
         sum_rows.append({
-            "method": method, "variant": vname, "n": len(grp),
+            "method":    method,
+            "variant":   vname,
+            "k":         int(k_val),
+            "n":         len(grp),
             "mean_suff": round(float(grp["suff"].dropna().mean()), 4),
             "std_suff":  round(float(grp["suff"].dropna().std()),  4),
             "mean_comp": round(float(grp["comp"].dropna().mean()), 4),
@@ -655,7 +670,8 @@ def run_faithfulness_evaluation():
     df_sum.to_csv(sum_path, index=False, encoding="utf-8")
     print(f"  Saved summary -> {sum_path}")
 
-    print(f"\n  {'method':5s}  {'variant':20s}  {'mean_suff':>9s}  {'mean_comp':>9s}")
-    for _, row in df_sum.sort_values(["method", "variant"]).iterrows():
+    df_k5 = df_sum[df_sum["k"] == 5] if 5 in k_values else df_sum
+    print(f"\n  {'method':5s}  {'variant':20s}  {'k':>3s}  {'mean_suff':>9s}  {'mean_comp':>9s}")
+    for _, row in df_k5.sort_values(["method", "variant"]).iterrows():
         print(f"  {row['method']:5s}  {row['variant']:20s}  "
-              f"{row['mean_suff']:9.4f}  {row['mean_comp']:9.4f}")
+              f"{int(row['k']):3d}  {row['mean_suff']:9.4f}  {row['mean_comp']:9.4f}")
