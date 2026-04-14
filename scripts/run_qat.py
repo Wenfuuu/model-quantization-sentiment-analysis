@@ -707,10 +707,10 @@ def main():
         "--qat-precision",
         type=str,
         choices=["fp16", "int8", "int4"],
-        default=None,
+        default="int8",
         help=(
             "Fake-quantization precision for multi-seed QAT: "
-            "Required when --multiseed-qat is used."
+            "fp16 (FP16-range scale init), int8 (default), or int4 (4-bit weight range)"
         ),
     )
     parser.add_argument(
@@ -732,17 +732,11 @@ def main():
         return
 
     if args.multiseed_qat:
-        if args.qat_precision is None:
-            parser.error("--qat-precision is required when using --multiseed-qat")
         run_multiseed_qat(epochs=args.qat_epochs, lr=args.qat_lr, qat_precision=args.qat_precision)
         return
 
     if args.multiseed_qat_onnx:
         run_multiseed_qat_onnx()
-        return
-
-    if len(sys.argv) == 1:
-        interactive_menu()
         return
 
     methods = ["eager"]

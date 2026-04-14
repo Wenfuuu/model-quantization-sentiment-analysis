@@ -33,7 +33,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.config import DEVICE
 from src.utils import set_seed
 from src.evaluation.calibration import expected_calibration_error
-from src.evaluation.explanation_drift import spearman_rank_correlation
 
 def _ece(confs, corr):
     return expected_calibration_error(confs, corr, n_bins=10)["ece"]
@@ -298,108 +297,6 @@ def train_single_seed(
 
     return results
 
-def _write_train_log(log_path: Path, seed: int, history: list) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "w", encoding="utf-8") as f:
-        f.write(f"# FP32 Control Retrain — seed={seed}\n")
-        f.write("# epoch | train_loss | train_acc | train_f1 | val_loss | val_acc | val_f1\n")
-        for h in history:
-            f.write(
-                f"{h['epoch']} | {h['train_loss']:.6f} | {h['train_acc']:.6f} | "
-                f"{h['train_f1']:.6f} | {h['val_loss']:.6f} | "
-                f"{h['val_acc']:.6f} | {h['val_f1']:.6f}\n"
-            )
-    print(f"  Training log saved -> {log_path}")
-
-def _compute_attribution_stability(
-    baseline_dir: Path,
-    control_dir: Path,
-    test_texts: list,
-    seed: int,
-    n_samples: int = 100,
-) -> dict:
-    from src.xai.integrated_gradients import IntegratedGradientsExplainer
-
-    print(f"\n  [stability] Loading baseline from {baseline_dir} ...")
-    tokenizer = AutoTokenizer.from_pretrained(str(baseline_dir))
-    model_a = AutoModelForSequenceClassification.from_pretrained(
-        str(baseline_dir), num_labels=len(LABEL2ID), ignore_mismatched_sizes=True,
-    ).to(DEVICE)
-    model_a.eval()
-
-    print(f"  [stability] Loading control from {control_dir} ...")
-    model_b = AutoModelForSequenceClassification.from_pretrained(
-        str(control_dir), num_labels=len(LABEL2ID), ignore_mismatched_sizes=True,
-    ).to(DEVICE)
-    model_b.eval()
-
-    explainer_a = IntegratedGradientsExplainer(model_a, tokenizer, DEVICE, precision="fp32")
-    explainer_b = IntegratedGradientsExplainer(model_b, tokenizer, DEVICE, precision="fp32")
-
-    texts = test_texts[:n_samples]
-    rhos = []
-    print(f"  [stability] Computing IG attribution stability over {len(texts)} samples ...")
-    for i, text in enumerate(texts):
-        try:
-            attr_a = explainer_a.explain(text)
-            attr_b = explainer_b.explain(text)
-            scores_a = attr_a["scores"]
-            scores_b = attr_b["scores"]
-            if hasattr(scores_a, "tolist"):
-                scores_a = scores_a.tolist()
-            if hasattr(scores_b, "tolist"):
-                scores_b = scores_b.tolist()
-            rho, _ = spearman_rank_correlation(
-                attr_a["tokens"], scores_a,
-                attr_b["tokens"], scores_b,
-            )
-            if not np.isnan(rho):
-                rhos.append(rho)
-        except Exception as exc:
-            warnings.warn(f"  [stability] Sample {i} skipped: {exc}")
-            continue
-        if (i + 1) % 20 == 0:
-            print(f"    {i + 1}/{len(texts)} samples done  (running mean rho={np.mean(rhos):.4f})")
-
-    del model_a, model_b
-
-    rho_mean = float(np.mean(rhos)) if rhos else float("nan")
-    rho_std  = float(np.std(rhos, ddof=1)) if len(rhos) > 1 else 0.0
-    return {"seed": seed, "rho_mean": rho_mean, "rho_std": rho_std, "n_samples": len(rhos)}
-
-
-def _aggregate_stability_results(seeds: list) -> dict:
-    """Read per-seed stability JSONs and write stability_summary.json."""
-    results_dir = BASE_DIR / "results" / "fp32_control"
-    rho_means = []
-    for seed in seeds:
-        p = results_dir / f"stability_seed{seed}.json"
-        if p.exists():
-            data = json.loads(p.read_text(encoding="utf-8"))
-            v = data.get("rho_mean", float("nan"))
-            if not np.isnan(v):
-                rho_means.append(v)
-
-    if not rho_means:
-        print("  [stability] No stability results found; skipping summary.")
-        return {}
-
-    overall_mean = float(np.mean(rho_means))
-    overall_std  = float(np.std(rho_means, ddof=1)) if len(rho_means) > 1 else 0.0
-    interpretation = "retraining_clean" if overall_mean > 0.97 else "retraining_confounded"
-
-    summary = {
-        "rho_mean":       overall_mean,
-        "rho_std":        overall_std,
-        "interpretation": interpretation,
-    }
-    out_path = results_dir / "stability_summary.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-    print(f"\n  Stability summary saved -> {out_path}")
-    print(f"  rho_mean={overall_mean:.4f}  rho_std={overall_std:.4f}  → {interpretation}")
-    return summary
 
 def main(args):
     if args.seed is not None:
@@ -436,54 +333,12 @@ def main(args):
         )
         all_results.append(result)
 
-        _ckpt_root = BASE_DIR / "checkpoints"
-        _ckpt_root.mkdir(parents=True, exist_ok=True)
         if getattr(args, "control_retrain", False):
             ckpt_path = SAVE_BASE / f"fp32_control_seed{seed}.pt"
-            _canonical  = _ckpt_root / f"fp32_control_seed{seed}.pt"
-        else:
-            ckpt_path  = SAVE_BASE / f"fp32_seed{seed}.pt"
-            _canonical = _ckpt_root / f"fp32_seed{seed}.pt"
-        _saved_model = AutoModelForSequenceClassification.from_pretrained(save_dir)
-        torch.save(_saved_model.state_dict(), ckpt_path)
-        torch.save(_saved_model.state_dict(), _canonical)
-        del _saved_model
-        print(f"  Checkpoint saved -> {_canonical}")
-
-        if getattr(args, "control_retrain", False):
-            log_path = BASE_DIR / "logs" / f"fp32_control_seed{seed}_train.log"
-            _write_train_log(log_path, seed, result["training_history"])
-
-            baseline_dir = SAVE_BASE / f"fp32_seed{seed}"
-            if not baseline_dir.exists():
-                warnings.warn(
-                    f"  [stability] Baseline checkpoint not found at {baseline_dir}. "
-                    "Run normal FP32 fine-tuning first.  Skipping stability.",
-                    UserWarning,
-                )
-            else:
-                n_stab = getattr(args, "n_stability_samples", 100)
-                test_texts = SMSADataset(DATA_DIR / "smsa_test_v2.csv",
-                                         AutoTokenizer.from_pretrained(str(baseline_dir))).texts
-                stability = _compute_attribution_stability(
-                    baseline_dir=baseline_dir,
-                    control_dir=save_dir,
-                    test_texts=test_texts,
-                    seed=seed,
-                    n_samples=n_stab,
-                )
-                stab_dir = BASE_DIR / "results" / "fp32_control"
-                stab_dir.mkdir(parents=True, exist_ok=True)
-                stab_path = stab_dir / f"stability_seed{seed}.json"
-                with open(stab_path, "w", encoding="utf-8") as _f:
-                    json.dump(stability, _f, indent=2)
-                print(f"  Stability result saved -> {stab_path}")
-                print(f"  rho_mean={stability['rho_mean']:.4f}  "
-                      f"rho_std={stability['rho_std']:.4f}  "
-                      f"n_samples={stability['n_samples']}")
-
-    if getattr(args, "control_retrain", False) and len(all_results) > 1:
-        _aggregate_stability_results([r["seed"] for r in all_results])
+            _ctrl_model = AutoModelForSequenceClassification.from_pretrained(save_dir)
+            torch.save(_ctrl_model.state_dict(), ckpt_path)
+            print(f"  Control checkpoint saved -> {ckpt_path}")
+            del _ctrl_model
 
     if len(all_results) > 1:
         accs = [r["test_accuracy"] for r in all_results]
@@ -496,6 +351,7 @@ def main(args):
         print(f"\n  SmSA accuracy:  {np.mean(accs):.4f} +/- {np.std(accs, ddof=1):.4f}")
         print(f"  SmSA macro-F1:  {np.mean(f1s):.4f} +/- {np.std(f1s, ddof=1):.4f}")
         print("=" * 60)
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -516,16 +372,8 @@ def parse_args():
         action="store_true",
         default=False,
         help=(
-            "Saves to checkpoints/fp32_control_seed{seed}.pt and "
-            "logs/fp32_control_seed{seed}_train.log, then automatically runs "
+            "Saves to models/fp32_control_seed{seed}/ (HuggingFace format)"
         ),
-    )
-    p.add_argument(
-        "--n-stability-samples",
-        type=int,
-        default=100,
-        help="Number of test samples used for attribution stability evaluation "
-             "(only active with --control-retrain). Default: 100.",
     )
     return p.parse_args()
 

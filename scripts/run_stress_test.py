@@ -430,15 +430,6 @@ def run_stress_test_experiment(version_key, tests=None):
         _phenom_map = {p.text: remap_to_8_categories(p) for p in probes}
         compute_psr_per_phenomenon(_res_dir, _phenom_map)
 
-        from src.evaluation.evaluate_psr import run_psr_evaluation
-        print_section("PSR PER-PHENOMENON BREAKDOWN (modular evaluation)")
-        run_psr_evaluation(
-            models=_seed_models,
-            probes=probes,
-            results_dir=_res_dir,
-            use_fp16_map=_seed_fp16_map,
-        )
-
         all_results["linguistic_probes"] = _all_seed_results
 
     print_section("STRESS TEST COMPLETED")

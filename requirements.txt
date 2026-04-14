@@ -21,3 +21,4 @@ flatbuffers>=23.0.0
 peft>=0.4.0
 bitsandbytes>=0.41.0
 psutil>=5.9.0
+statsmodels>=0.14.0

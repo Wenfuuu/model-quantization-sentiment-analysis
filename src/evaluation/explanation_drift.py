@@ -314,41 +314,6 @@ def wilcoxon_drift_test(
         ),
     }
 
-def bootstrap_spearman(vec_a, vec_b, n_resamples: int = 2000, ci: float = 0.95) -> dict:
-    from scipy.stats import spearmanr
-    rng = np.random.default_rng(42)
-    n = len(vec_a)
-    boot = [spearmanr(vec_a[idx := rng.integers(0, n, n)], vec_b[idx]).statistic
-            for _ in range(n_resamples)]
-    alpha = (1 - ci) / 2
-    return {
-        "rho":      float(spearmanr(vec_a, vec_b).statistic),
-        "ci_low":   float(np.quantile(boot, alpha)),
-        "ci_high":  float(np.quantile(boot, 1 - alpha)),
-        "n":        n,
-    }
-
-
-def wilcoxon_bonferroni(rho_pairs: list) -> list:
-    from scipy.stats import wilcoxon
-    from statsmodels.stats.multitest import multipletests
-
-    raw = []
-    for name_a, name_b, a, b in rho_pairs:
-        try:
-            stat, p = wilcoxon(a, b, alternative="two-sided")
-        except ValueError:
-            stat, p = float("nan"), float("nan")
-        raw.append({"pair": f"{name_a}_vs_{name_b}", "W": float(stat), "p_raw": float(p)})
-
-    pvals = [r["p_raw"] if not np.isnan(r["p_raw"]) else 1.0 for r in raw]
-    if pvals:
-        _, pcorr, _, _ = multipletests(pvals, method="bonferroni")
-        for r, pc in zip(raw, pcorr):
-            r["p_bonferroni"] = float(pc)
-            r["significant"]  = bool(pc < 0.05)
-    return raw
-
 def run_stability_analysis():
     import pandas as pd
     import json as _json
@@ -369,50 +334,9 @@ def run_stability_analysis():
         return
     print(f"  Stratified subsample: {len(samples)} samples")
 
-    try:
-        import pandas as _pd_idx
-        _test_df  = _pd_idx.read_csv(_TEST_CSV).dropna(subset=["text", "label"])
-        _val_df   = _pd_idx.read_csv(_VAL_CSV).dropna(subset=["text", "label"])
-        _n_test   = len(_test_df)
-        _lmap     = {0: "pos", 1: "neu", 2: "neg"}
-        _class_counts = {"pos": 0, "neu": 0, "neg": 0}
-        _test_ids, _val_ids = [], []
-        for _sid, _ in samples:
-            if _sid < _n_test:
-                _test_ids.append(_sid)
-                _lbl = int(_test_df.iloc[_sid]["label"])
-                _class_counts[_lmap.get(_lbl, str(_lbl))] = _class_counts.get(_lmap.get(_lbl, str(_lbl)), 0) + 1
-            else:
-                _val_ids.append(_sid - _n_test)
-                _lbl = int(_val_df.iloc[_sid - _n_test]["label"])
-                _class_counts[_lmap.get(_lbl, str(_lbl))] = _class_counts.get(_lmap.get(_lbl, str(_lbl)), 0) + 1
-        _idx_path = _RES_DIR / "eval_sample_indices.json"
-        _idx_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(_idx_path, "w", encoding="utf-8") as _f:
-            import json as _json_idx
-            _json_idx.dump({"test_indices": _test_ids, "val_indices": _val_ids,
-                            "class_counts": _class_counts}, _f, indent=2)
-        print(f"  Sample indices saved -> {_idx_path}  "
-              f"(test={len(_test_ids)}, val={len(_val_ids)}, "
-              f"classes={_class_counts})")
-    except Exception as _e:
-        print(f"  [WARN] Could not save eval_sample_indices.json: {_e}")
-
     VARIANTS_7 = ["ptq_fp16", "ptq_int8", "ptq_int4", "qat_fp32",
                    "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4", "fp32_control"]
     METHODS = ["lime", "occ", "shap"]
-
-    _VARIANT_LABEL = {
-        "ptq_fp16":       "PTQ-FP16",
-        "ptq_int8":       "PTQ-INT8",
-        "ptq_int4":       "PTQ-INT4",
-        "qat_fp32":       "QAT-FP32",
-        "qat_onnx_fp16":  "QAT-ONNX-FP16",
-        "qat_onnx_int8":  "QAT-ONNX-INT8",
-        "qat_onnx_int4":  "QAT-ONNX-INT4",
-        "fp32_control":   "FP32-Control",
-        "qat_ste":        "QAT-STE",
-    }
 
     def _load_pair(method, vname, sid, text):
         fp32_path = _OUT_DIR / f"{method}_fp32_{sid}.npy"
@@ -426,9 +350,7 @@ def run_stability_analysis():
         return words[:L], fp32_s[:L].tolist(), var_s[:L].tolist()
 
     per_rows = []
-    n_found  = 0
-    _raw_fp32: dict = {v: [] for v in VARIANTS_7 + ["qat_ste"]}
-    _raw_var:  dict = {v: [] for v in VARIANTS_7 + ["qat_ste"]}
+    n_found = 0
 
     for method in METHODS:
         for vname in VARIANTS_7:
@@ -446,8 +368,6 @@ def run_stability_analysis():
                                       "spearman_rho": rho,
                                       "jaccard_k3": j3, "jaccard_k5": j5, "jaccard_k10": j10})
                     n_found += 1
-                    _raw_fp32[vname].extend(fp32_l)
-                    _raw_var[vname].extend(var_l)
             print(f"  {method:5s} x {vname:20s}: {n_found} samples found")
             n_found = 0
 
@@ -473,8 +393,6 @@ def run_stability_analysis():
                               "spearman_rho": rho,
                               "jaccard_k3": j3, "jaccard_k5": j5, "jaccard_k10": j10})
             ig_found += 1
-            _raw_fp32["qat_ste"].extend(fp32_l)
-            _raw_var["qat_ste"].extend(var_l)
     print(f"  ig    x qat_ste             : {ig_found} samples")
 
     if not per_rows:
@@ -756,75 +674,307 @@ def run_stability_analysis():
             "Run the XAI pipeline on fp32_control_seed{{seed}} checkpoints first."
         )
 
-    all_variant_keys = [v for v in (list(VARIANTS_7) + ["qat_ste"])
-                        if len(_raw_fp32.get(v, [])) >= 10]
-
-    _variants_out: dict = {}
-    for vname in all_variant_keys:
-        _a = np.array(_raw_fp32[vname])
-        _b = np.array(_raw_var[vname])
-        _bs = bootstrap_spearman(_a, _b, n_resamples=2000, ci=0.95)
-        _label = _VARIANT_LABEL.get(vname, vname)
-        _variants_out[_label] = _bs
-
-    _rho_by_variant: dict = {}
-    for vname in all_variant_keys:
-        _label = _VARIANT_LABEL.get(vname, vname)
-        _grp = df_per[df_per["variant"] == vname][["sample_id", "spearman_rho"]]
-        _rho_by_variant[_label] = dict(zip(_grp["sample_id"], _grp["spearman_rho"]))
-
-    from itertools import combinations as _combs
-    _rho_pairs = []
-    for _la, _lb in _combs(list(_rho_by_variant.keys()), 2):
-        _shared = set(_rho_by_variant[_la]) & set(_rho_by_variant[_lb])
-        if len(_shared) < 10:
-            continue
-        _sids = sorted(_shared)
-        _ra = [_rho_by_variant[_la][s] for s in _sids]
-        _rb = [_rho_by_variant[_lb][s] for s in _sids]
-        _rho_pairs.append((_la, _lb, _ra, _rb))
-
-    _pairwise_out = wilcoxon_bonferroni(_rho_pairs) if _rho_pairs else []
-
-    _sample_source = {"test": len(_test_ids) if "_test_ids" in dir() else 0,
-                      "val":  len(_val_ids)  if "_val_ids"  in dir() else 0}
-
-    _full_stats = {
-        "variants":       _variants_out,
-        "pairwise_tests": _pairwise_out,
-        "n_eval":         len(samples),
-        "n_cross_seed":   len(cross_seed_samples),
-        "sample_source":  _sample_source,
-    }
-    _full_path = _RES_DIR / "stability_full_stats.json"
-    with open(_full_path, "w", encoding="utf-8") as _f:
-        _json.dump(_full_stats, _f, indent=2)
-    print(f"\n  stability_full_stats.json saved -> {_full_path}")
-
-    _table_rows = []
-    for _label, _bs in _variants_out.items():
-        _vname = next((k for k, v in _VARIANT_LABEL.items() if v == _label), _label)
-        _grp = df_per[df_per["variant"] == _vname]
-        _rhos_all = _grp["spearman_rho"].dropna().tolist()
-        _j5_all   = _grp["jaccard_k5"].dropna().tolist()
-        _pw = next((r for r in _pairwise_out if _label in r["pair"]), {})
-        _table_rows.append({
-            "variant":        _label,
-            "n":              _bs["n"],
-            "rho":            round(_bs["rho"], 4),
-            "ci_low":         round(_bs["ci_low"], 4),
-            "ci_high":        round(_bs["ci_high"], 4),
-            "mean_rho_per_sample": round(float(np.mean(_rhos_all)), 4) if _rhos_all else float("nan"),
-            "std_rho":        round(float(np.std(_rhos_all)), 4) if _rhos_all else float("nan"),
-            "mean_j5":        round(float(np.mean(_j5_all)), 4) if _j5_all else float("nan"),
-        })
-
-    import pandas as _pd_tbl
-    _tbl_path = _RES_DIR / "stability_table.csv"
-    _pd_tbl.DataFrame(_table_rows).to_csv(_tbl_path, index=False, encoding="utf-8")
-    print(f"  stability_table.csv saved -> {_tbl_path}")
-
+    run_full_stability_stats()
     compute_power_analysis()
+
+_VARIANT_DISPLAY = {
+    "ptq_fp16":      "PTQ-FP16",
+    "ptq_int8":      "PTQ-INT8",
+    "ptq_int4":      "PTQ-INT4",
+    "qat_fp32":      "QAT-FP32",
+    "qat_onnx_fp16": "QAT-FP16",
+    "qat_onnx_int8": "QAT-INT8",
+    "qat_onnx_int4": "QAT-INT4",
+    "fp32_control":  "FP32-Ctrl",
+}
+
+_PTQ_QAT_LABEL_PAIRS = [
+    ("ptq_fp16",  "qat_onnx_fp16"),
+    ("ptq_int8",  "qat_onnx_int8"),
+    ("ptq_int4",  "qat_onnx_int4"),
+]
+
+
+def _build_latex_stability_tables(
+    per_variant: dict,
+    ptq_vs_qat: dict,
+    methods: list,
+    variants: list,
+) -> str:
+    lines = []
+
+    lines += [
+        r"\begin{table}[htbp]",
+        r"\centering",
+        r"\caption{Explanation stability per quantization variant "
+        r"(Spearman $\bar{\rho}$ vs.\ FP32-base, one-sided Wilcoxon "
+        r"$H_1\colon\rho<1$, Bonferroni-corrected across all "
+        r"method$\times$variant comparisons)}",
+        r"\label{tab:stability_per_variant}",
+        r"\begin{tabular}{llrrrrr}",
+        r"\toprule",
+        r"Method & Variant & $\bar{\rho}$ & $\mathrm{CI}_{\mathrm{lo}}$ "
+        r"& $\mathrm{CI}_{\mathrm{hi}}$ & $W$ & $p_{\mathrm{Bonf}}$ \\",
+        r"\midrule",
+    ]
+
+    prev_method = None
+    for method in methods:
+        if prev_method is not None:
+            lines.append(r"\addlinespace")
+        for vname in variants:
+            row = per_variant.get(vname, {}).get(method)
+            if row is None:
+                continue
+            vlabel  = _VARIANT_DISPLAY.get(vname, vname)
+            p_b     = row.get("wilcoxon_p_bonferroni")
+            sig     = r"$^{*}$" if (p_b is not None and not np.isnan(p_b) and p_b < 0.05) else ""
+            p_b_str = f"{p_b:.4f}{sig}" if (p_b is not None and not np.isnan(p_b)) else r"\textit{n/a}"
+            w_str   = (f"{row['wilcoxon_stat']:.1f}"
+                       if row.get("wilcoxon_stat") is not None else r"\textit{n/a}")
+            lines.append(
+                f"{method} & {vlabel} & {row['mean_rho']:.3f} "
+                f"& {row['ci_low']:.3f} & {row['ci_high']:.3f} "
+                f"& {w_str} & {p_b_str} \\\\"
+            )
+        prev_method = method
+
+    lines += [
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+        "",
+    ]
+
+    lines += [
+        r"\begin{table}[htbp]",
+        r"\centering",
+        r"\caption{PTQ vs.\ QAT explanation-stability comparison "
+        r"(two-sided Wilcoxon signed-rank, Bonferroni-corrected; "
+        r"$\rho_{\mathrm{stab}}$ = Spearman correlation between PTQ and QAT "
+        r"per-sample stability distributions; $d$ = Cohen's $d$)}",
+        r"\label{tab:ptq_vs_qat_stability}",
+        r"\begin{tabular}{lllrrrr}",
+        r"\toprule",
+        r"Method & PTQ & QAT & $W$ & $p_{\mathrm{Bonf}}$ "
+        r"& $d$ & $\rho_{\mathrm{stab}}$ \\",
+        r"\midrule",
+    ]
+
+    prev_method = None
+    for method in methods:
+        if prev_method is not None:
+            lines.append(r"\addlinespace")
+        for ptq_v, qat_v in _PTQ_QAT_LABEL_PAIRS:
+            pair_key  = f"{ptq_v}_vs_{qat_v}"
+            row       = ptq_vs_qat.get(pair_key, {}).get(method)
+            if row is None:
+                continue
+            ptq_label = _VARIANT_DISPLAY.get(ptq_v, ptq_v)
+            qat_label = _VARIANT_DISPLAY.get(qat_v, qat_v)
+            p_b       = row.get("wilcoxon_p_bonferroni")
+            sig       = r"$^{*}$" if (p_b is not None and not np.isnan(p_b) and p_b < 0.05) else ""
+            p_b_str   = f"{p_b:.4f}{sig}" if (p_b is not None and not np.isnan(p_b)) else r"\textit{n/a}"
+            w_str     = (f"{row['wilcoxon_stat']:.1f}"
+                         if (row.get("wilcoxon_stat") is not None
+                             and not np.isnan(row["wilcoxon_stat"])) else r"\textit{n/a}")
+            d_val     = row.get("cohens_d")
+            d_str     = f"{d_val:.3f}" if (d_val is not None and not np.isnan(d_val)) else r"\textit{n/a}"
+            rho_stab  = row.get("spearman_rho_stability")
+            rho_str   = (f"{rho_stab:.3f}"
+                         if (rho_stab is not None and not np.isnan(rho_stab)) else r"\textit{n/a}")
+            lines.append(
+                f"{method} & {ptq_label} & {qat_label} & {w_str} "
+                f"& {p_b_str} & {d_str} & {rho_str} \\\\"
+            )
+        prev_method = method
+
+    lines += [
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+        "",
+    ]
+
+    return "\n".join(lines)
+
+def run_full_stability_stats():
+    import pandas as pd
+    import json as _json
+    from scipy.stats import bootstrap as _scipy_bootstrap
+    from scipy.stats import wilcoxon as _sp_wilcoxon
+    from src.utils.stats_utils import (
+        bootstrap_spearman,
+        wilcoxon_test,
+        bonferroni_correct,
+        cohens_d,
+    )
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    _RES_DIR = _PROJECT_ROOT / "results"
+    per_path = _RES_DIR / "stability_perSample.csv"
+
+    if not per_path.exists():
+        print("  [WARN] stability_perSample.csv not found – run Stability Analysis first.")
+        return
+
+    df = pd.read_csv(per_path)
+
+    VARIANTS = [
+        "ptq_fp16", "ptq_int8", "ptq_int4",
+        "qat_fp32", "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4",
+    ]
+    METHODS = ["lime", "occ", "shap"]
+
+    per_variant: dict = {}
+    pv_raw_ps: List[float] = []
+    pv_keys:   List[tuple]  = []
+
+    for vname in VARIANTS:
+        per_variant[vname] = {}
+        for method in METHODS:
+            grp  = df[(df["variant"] == vname) & (df["method"] == method)]
+            rhos = grp["spearman_rho"].dropna().tolist()
+
+            if len(rhos) < 2:
+                per_variant[vname][method] = None
+                pv_raw_ps.append(float("nan"))
+                pv_keys.append((vname, method))
+                continue
+
+            ci_res = _scipy_bootstrap(
+                (np.array(rhos, dtype=float),),
+                np.mean,
+                n_resamples=2000,
+                confidence_level=0.95,
+                method="percentile",
+                random_state=42,
+            )
+            ci_low  = float(ci_res.confidence_interval.low)
+            ci_high = float(ci_res.confidence_interval.high)
+
+            diffs = [r - 1.0 for r in rhos]
+            try:
+                w_stat, w_p = _sp_wilcoxon(diffs, alternative="less")
+            except ValueError:
+                w_stat = w_p = float("nan")
+
+            per_variant[vname][method] = {
+                "n":               len(rhos),
+                "mean_rho":        round(float(np.mean(rhos)), 6),
+                "ci_low":          round(ci_low,               6),
+                "ci_high":         round(ci_high,              6),
+                "wilcoxon_stat":   (round(float(w_stat), 4)
+                                    if not np.isnan(w_stat) else None),
+                "wilcoxon_p_raw":  (round(float(w_p), 6)
+                                    if not np.isnan(w_p) else None),
+            }
+            pv_raw_ps.append(float(w_p) if not np.isnan(w_p) else float("nan"))
+            pv_keys.append((vname, method))
+
+    pv_bonf = bonferroni_correct(pv_raw_ps)
+    for (vname, method), p_bonf in zip(pv_keys, pv_bonf):
+        if per_variant[vname][method] is None:
+            continue
+        per_variant[vname][method]["wilcoxon_p_bonferroni"] = (
+            round(p_bonf, 6) if not np.isnan(p_bonf) else None
+        )
+        per_variant[vname][method]["significant"] = (
+            not np.isnan(p_bonf) and float(p_bonf) < 0.05
+        )
+
+    ptq_vs_qat: dict       = {}
+    pq_raw_ps:  List[float] = []
+    pq_keys:    List[tuple]  = []
+
+    for ptq_v, qat_v in _PTQ_QAT_LABEL_PAIRS:
+        pair_key = f"{ptq_v}_vs_{qat_v}"
+        ptq_vs_qat[pair_key] = {}
+        for method in METHODS:
+            ptq_grp  = df[(df["variant"] == ptq_v) & (df["method"] == method)]
+            qat_grp  = df[(df["variant"] == qat_v) & (df["method"] == method)]
+            merged   = ptq_grp.merge(qat_grp, on="sample_id", suffixes=("_ptq", "_qat"))
+            merged   = merged.dropna(subset=["spearman_rho_ptq", "spearman_rho_qat"])
+            n_paired = int(len(merged))
+
+            if n_paired < 10:
+                ptq_vs_qat[pair_key][method] = None
+                pq_raw_ps.append(float("nan"))
+                pq_keys.append((pair_key, method))
+                continue
+
+            ptq_rhos = merged["spearman_rho_ptq"].tolist()
+            qat_rhos = merged["spearman_rho_qat"].tolist()
+
+            bs   = bootstrap_spearman(ptq_rhos, qat_rhos, n_resamples=2000)
+            wt   = wilcoxon_test(ptq_rhos, qat_rhos)
+            d    = cohens_d(ptq_rhos, qat_rhos)
+
+            ptq_vs_qat[pair_key][method] = {
+                "n_paired":               n_paired,
+                "wilcoxon_stat":          wt["stat"],
+                "wilcoxon_p_raw":         wt["p_value"],
+                "cohens_d":               d,
+                "spearman_rho_stability": bs["rho"],
+                "rho_ci_low":             bs["ci_low"],
+                "rho_ci_high":            bs["ci_high"],
+            }
+            pq_raw_ps.append(
+                wt["p_value"] if not np.isnan(wt["p_value"]) else float("nan")
+            )
+            pq_keys.append((pair_key, method))
+
+    pq_bonf = bonferroni_correct(pq_raw_ps)
+    for (pair_key, method), p_bonf in zip(pq_keys, pq_bonf):
+        if ptq_vs_qat[pair_key][method] is None:
+            continue
+        ptq_vs_qat[pair_key][method]["wilcoxon_p_bonferroni"] = (
+            round(p_bonf, 6) if not np.isnan(p_bonf) else None
+        )
+        ptq_vs_qat[pair_key][method]["significant"] = (
+            not np.isnan(p_bonf) and float(p_bonf) < 0.05
+        )
+
+    full_stats: dict = {
+        "_meta": {
+            "bootstrap_n_resamples":        2000,
+            "bootstrap_method":             "percentile",
+            "wilcoxon_per_variant":         "one-sided (H1: rho < 1.0)",
+            "wilcoxon_ptq_vs_qat":          "two-sided",
+            "bonferroni_scope_per_variant": len(pv_keys),
+            "bonferroni_scope_ptq_vs_qat":  len(pq_keys),
+        },
+        "per_variant": per_variant,
+        "ptq_vs_qat":  ptq_vs_qat,
+    }
+
+    json_path = _RES_DIR / "stability_full_stats.json"
+    with open(json_path, "w", encoding="utf-8") as _f:
+        _json.dump(full_stats, _f, indent=2)
+    print(f"\n  stability_full_stats.json -> {json_path}")
+
+    tex     = _build_latex_stability_tables(per_variant, ptq_vs_qat, METHODS, VARIANTS)
+    tex_path = _RES_DIR / "stability_table.tex"
+    tex_path.write_text(tex, encoding="utf-8")
+    print(f"  stability_table.tex       -> {tex_path}")
+
+    hdr = (f"\n  {'variant':22s}  {'method':5s}  {'rho':>6s}  "
+           f"{'95% CI':^15s}  {'W':>8s}  {'p_Bonf':>9s}  sig?")
+    print(hdr)
+    for vname in VARIANTS:
+        for method in METHODS:
+            row = per_variant[vname].get(method)
+            if row is None:
+                continue
+            p_b   = row.get("wilcoxon_p_bonferroni")
+            sig   = "*" if (p_b is not None and not np.isnan(p_b) and p_b < 0.05) else " "
+            pb_s  = f"{p_b:.4f}" if (p_b is not None and not np.isnan(p_b)) else "  n/a "
+            w_s   = (f"{row['wilcoxon_stat']:.1f}"
+                     if row.get("wilcoxon_stat") is not None else " n/a")
+            ci_s  = f"[{row['ci_low']:.3f}, {row['ci_high']:.3f}]"
+            print(f"  {vname:22s}  {method:5s}  "
+                  f"{row['mean_rho']:6.3f}  {ci_s:15s}  "
+                  f"{w_s:>8s}  {pb_s:>9s}  {sig}")
 
 def compute_power_analysis():
     import math
