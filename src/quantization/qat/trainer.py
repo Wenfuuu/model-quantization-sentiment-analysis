@@ -8,9 +8,29 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForSequenceClassification, get_linear_schedule_with_warmup
 from tqdm import tqdm
 
-from src.config import LABELS, DEVICE
+from src.config import LABELS, DEVICE, BASE_DIR
 from .config import QATConfig
 
+def get_qat_config(precision: str) -> torch.quantization.QConfig:
+    if precision == 'fp16':
+        act_obs = torch.quantization.MovingAverageMinMaxObserver.with_args(
+            dtype=torch.qint8, qscheme=torch.per_tensor_symmetric,
+            quant_min=-127, quant_max=127)
+        wt_obs  = torch.quantization.PerChannelMinMaxObserver.with_args(
+            dtype=torch.qint8, qscheme=torch.per_channel_symmetric)
+        return torch.quantization.QConfig(activation=act_obs, weight=wt_obs)
+    elif precision == 'int8':
+        return torch.quantization.get_default_qat_qconfig('fbgemm')
+    elif precision == 'int4':
+        act_obs = torch.quantization.MovingAverageMinMaxObserver.with_args(
+            dtype=torch.qint8, qscheme=torch.per_tensor_symmetric,
+            quant_min=-8, quant_max=7)
+        wt_obs  = torch.quantization.PerChannelMinMaxObserver.with_args(
+            dtype=torch.qint8, qscheme=torch.per_channel_symmetric,
+            quant_min=-8, quant_max=7)
+        return torch.quantization.QConfig(activation=act_obs, weight=wt_obs)
+    else:
+        raise ValueError(f"Unknown precision: {precision}")
 
 class QATTrainer:
     def __init__(self, config: QATConfig):
@@ -34,7 +54,7 @@ class QATTrainer:
             num_labels=len(LABELS),
         )
 
-        self.model.qconfig = torch.quantization.get_default_qat_qconfig("fbgemm")
+        self.model.qconfig = get_qat_config(getattr(config, 'precision', 'int8'))
         torch.quantization.prepare_qat(self.model, inplace=True)
 
         if config.prepared_checkpoint:
@@ -229,23 +249,16 @@ QAT_PRECISION_CONFIGS = {
     },
 }
 
-
 def apply_qat_config_precision(model, precision: str = "int8") -> None:
-    if precision not in QAT_PRECISION_CONFIGS:
-        raise ValueError(
-            f"Unknown QAT precision {precision!r}. "
-            f"Valid choices: {list(QAT_PRECISION_CONFIGS)}"
-        )
-    cfg = QAT_PRECISION_CONFIGS[precision]
     model.train()
-    model.qconfig = cfg["qconfig"]
+    model.qconfig = get_qat_config(precision)
     if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
         model.bert.embeddings.qconfig = None
         print(f"  [qat-{precision}] Embedding layer excluded from quantization")
     tq.prepare_qat(model, inplace=True)
-    print(f"  [qat-{precision}] Fake-quantization observers attached ({cfg['description']})")
+    print(f"  [qat-{precision}] Fake-quantization observers attached (precision={precision})")
 
-    if cfg.get("fp16_scale_init"):
+    if precision == "fp16":
         fp16_scale = _FP16_MAX / 127.0
         n_init = 0
         for module in model.modules():
@@ -457,7 +470,7 @@ def train_qat_seed(
             "seed": seed,
             "precision": qat_precision,
             "best_val_weighted_f1": best_val_wf1,
-            "qconfig": QAT_PRECISION_CONFIGS[qat_precision]["description"],
+            "qconfig": f"get_qat_config('{qat_precision}')",
             "embeddings_excluded": True,
             "training_history": history,
         }, f, indent=2)
@@ -467,11 +480,43 @@ def train_qat_seed(
         json.dump(observer_stats, f, indent=2)
     print(f"  Observer log saved -> {obs_log_path}")
 
+    _precision_meta = {
+        "fp16": {"quant_min": -127, "quant_max": 127, "qscheme": "per_tensor_symmetric"},
+        "int8": {"quant_min": -128, "quant_max": 127, "qscheme": "per_tensor_affine"},
+        "int4": {"quant_min": -8,   "quant_max": 7,   "qscheme": "per_tensor_symmetric"},
+    }
+    _meta = _precision_meta.get(qat_precision, {"quant_min": None, "quant_max": None, "qscheme": "unknown"})
+    import datetime
+    _global_log_path = BASE_DIR / "logs" / "qat_observer_log.json"
+    _global_log_path.parent.mkdir(parents=True, exist_ok=True)
+    _existing = []
+    if _global_log_path.exists():
+        try:
+            _existing = json.loads(_global_log_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            _existing = []
+    _existing.append({
+        "precision": qat_precision,
+        "seed": seed,
+        "quant_min": _meta["quant_min"],
+        "quant_max": _meta["quant_max"],
+        "qscheme": _meta["qscheme"],
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+    })
+    with open(_global_log_path, "w", encoding="utf-8") as f:
+        json.dump(_existing, f, indent=2)
+    print(f"  Global observer log appended -> {_global_log_path}")
+
     print(f"Saving clean checkpoint -> {clean_dir}")
     clean_state = strip_observers(best_state_dict)
     ckpt_path = models_dir / f"qat_{qat_precision}_seed{seed}.pt"
     torch.save(clean_state, ckpt_path)
     print(f"  Named checkpoint saved -> {ckpt_path}")
+    _ckpt_dir = BASE_DIR / "checkpoints"
+    _ckpt_dir.mkdir(parents=True, exist_ok=True)
+    _canonical_ckpt = _ckpt_dir / f"qat_{qat_precision}_seed{seed}.pt"
+    torch.save(clean_state, _canonical_ckpt)
+    print(f"  Canonical checkpoint saved -> {_canonical_ckpt}")
     clean_model = AutoModelForSequenceClassification.from_pretrained(
         fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
     )

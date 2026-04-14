@@ -13,6 +13,7 @@ class QATConfig:
     data_path: Path
     save_dir: Path
     prepared_checkpoint: Optional[Path] = None
+    precision: str = 'int8'
     batch_size: int = 16
     epochs: int = 2
     learning_rate: float = 1e-5
@@ -28,7 +29,6 @@ class QATConfig:
         self.save_dir.mkdir(parents=True, exist_ok=True)
         if self.prepared_checkpoint:
             self.prepared_checkpoint = Path(self.prepared_checkpoint)
-
 
 @dataclass
 class FinetuneQATConfig:
