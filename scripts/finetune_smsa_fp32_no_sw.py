@@ -516,13 +516,8 @@ def parse_args():
         action="store_true",
         default=False,
         help=(
-            "Retrain FP32 from the pretrained HuggingFace checkpoint "
-            "(indobenchmark/indobert-base-p2) with identical hyperparameters "
-            "but NO quantization observers. Provides the ablation baseline that "
-            "isolates retraining gradient steps (a) from fake-quant noise (b). "
             "Saves to checkpoints/fp32_control_seed{seed}.pt and "
             "logs/fp32_control_seed{seed}_train.log, then automatically runs "
-            "IG attribution stability against the original FP32 baseline."
         ),
     )
     p.add_argument(

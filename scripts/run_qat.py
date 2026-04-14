@@ -741,6 +741,10 @@ def main():
         run_multiseed_qat_onnx()
         return
 
+    if len(sys.argv) == 1:
+        interactive_menu()
+        return
+
     methods = ["eager"]
     quant_types = ["int8", "int4"] if args.quant_type == "all" else [args.quant_type]
 

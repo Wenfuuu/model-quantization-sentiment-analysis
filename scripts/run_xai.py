@@ -1327,7 +1327,11 @@ if __name__ == "__main__":
         print(f"Mode: Auto-select ({num_samples} samples)")
     print("=" * 80)
 
-    run_xai_experiment(experiment_key, precisions, num_samples, divergence_samples)
+    if experiment_key == "stability":
+        from src.evaluation.explanation_drift import run_stability_analysis
+        run_stability_analysis()
+    else:
+        run_xai_experiment(experiment_key, precisions, num_samples, divergence_samples)
 
     print_section("XAI ANALYSIS COMPLETED")
     print(f"Results saved to: outputs/{experiment_key}/xai/comparison/")
