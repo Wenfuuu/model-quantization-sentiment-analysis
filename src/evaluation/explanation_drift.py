@@ -49,7 +49,6 @@ def top_k_jaccard(
     union = len(top_a | top_b)
     return intersection / union if union > 0 else 0.0
 
-
 def sign_flip_rate(
     tokens_a: List[str],
     scores_a: List[float],
@@ -675,6 +674,7 @@ def run_stability_analysis():
         )
 
     run_full_stability_stats()
+    compute_stability_by_family()
     compute_power_analysis()
 
 _VARIANT_DISPLAY = {
@@ -694,109 +694,208 @@ _PTQ_QAT_LABEL_PAIRS = [
     ("ptq_int4",  "qat_onnx_int4"),
 ]
 
+FAMILY: dict = {
+    "ig":   "gradient",
+    "gxi":  "gradient",
+    "lime": "perturbation",
+    "occ":  "perturbation",
+    "shap": "perturbation",
+}
 
-def _build_latex_stability_tables(
-    per_variant: dict,
-    ptq_vs_qat: dict,
-    methods: list,
-    variants: list,
-) -> str:
-    lines = []
+_METHOD_DISPLAY: dict = {
+    "ig":   "IG",
+    "gxi":  "GxI",
+    "lime": "LIME",
+    "occ":  "Occlusion",
+    "shap": "SHAP",
+}
 
-    lines += [
-        r"\begin{table}[htbp]",
-        r"\centering",
-        r"\caption{Explanation stability per quantization variant "
-        r"(Spearman $\bar{\rho}$ vs.\ FP32-base, one-sided Wilcoxon "
-        r"$H_1\colon\rho<1$, Bonferroni-corrected across all "
-        r"method$\times$variant comparisons)}",
-        r"\label{tab:stability_per_variant}",
-        r"\begin{tabular}{llrrrrr}",
-        r"\toprule",
-        r"Method & Variant & $\bar{\rho}$ & $\mathrm{CI}_{\mathrm{lo}}$ "
-        r"& $\mathrm{CI}_{\mathrm{hi}}$ & $W$ & $p_{\mathrm{Bonf}}$ \\",
-        r"\midrule",
-    ]
+QAT_ONNX_VARIANTS: frozenset = frozenset({
+    "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4",
+})
 
-    prev_method = None
-    for method in methods:
-        if prev_method is not None:
-            lines.append(r"\addlinespace")
-        for vname in variants:
-            row = per_variant.get(vname, {}).get(method)
-            if row is None:
+_VARIANTS_ORDER: tuple = (
+    "ptq_fp16", "ptq_int8", "ptq_int4",
+    "qat_fp32", "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4",
+)
+
+def compute_stability_by_family() -> None:
+    import json as _json
+    import shutil as _shutil
+    import pandas as pd
+    from scipy.stats import bootstrap as _scipy_bootstrap
+    from scipy.stats import wilcoxon as _sp_wilcoxon
+    from src.utils.stats_utils import bonferroni_correct
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    _RES_DIR      = _PROJECT_ROOT / "results"
+
+    per_path = _RES_DIR / "stability_perSample.csv"
+    if not per_path.exists():
+        print("  [WARN] stability_perSample.csv not found – run Stability Analysis first.")
+        return
+
+    df = pd.read_csv(per_path)
+    df["family"] = df["method"].map(FAMILY)
+
+    _FAMILIES = ("gradient", "perturbation")
+
+    entries: dict       = {}
+    raw_ps:  List[float] = []
+    pv_keys: List[tuple]  = []
+
+    for family in _FAMILIES:
+        family_methods = sorted(m for m, f in FAMILY.items() if f == family)
+        method_labels  = [_METHOD_DISPLAY.get(m, m) for m in family_methods]
+        df_fam         = df[df["family"] == family]
+
+        for vname in _VARIANTS_ORDER:
+            if family == "gradient" and vname in QAT_ONNX_VARIANTS:
+                entries[(vname, family)] = {
+                    "rho": None, "ci_low": None, "ci_high": None,
+                    "label":   "STE_PROXY_INVALID",
+                    "methods": method_labels,
+                }
                 continue
-            vlabel  = _VARIANT_DISPLAY.get(vname, vname)
-            p_b     = row.get("wilcoxon_p_bonferroni")
-            sig     = r"$^{*}$" if (p_b is not None and not np.isnan(p_b) and p_b < 0.05) else ""
-            p_b_str = f"{p_b:.4f}{sig}" if (p_b is not None and not np.isnan(p_b)) else r"\textit{n/a}"
-            w_str   = (f"{row['wilcoxon_stat']:.1f}"
-                       if row.get("wilcoxon_stat") is not None else r"\textit{n/a}")
-            lines.append(
-                f"{method} & {vlabel} & {row['mean_rho']:.3f} "
-                f"& {row['ci_low']:.3f} & {row['ci_high']:.3f} "
-                f"& {w_str} & {p_b_str} \\\\"
-            )
-        prev_method = method
 
-    lines += [
-        r"\bottomrule",
-        r"\end{tabular}",
-        r"\end{table}",
-        "",
-    ]
+            rhos = (df_fam[df_fam["variant"] == vname]["spearman_rho"]
+                    .dropna().tolist())
 
-    lines += [
-        r"\begin{table}[htbp]",
-        r"\centering",
-        r"\caption{PTQ vs.\ QAT explanation-stability comparison "
-        r"(two-sided Wilcoxon signed-rank, Bonferroni-corrected; "
-        r"$\rho_{\mathrm{stab}}$ = Spearman correlation between PTQ and QAT "
-        r"per-sample stability distributions; $d$ = Cohen's $d$)}",
-        r"\label{tab:ptq_vs_qat_stability}",
-        r"\begin{tabular}{lllrrrr}",
-        r"\toprule",
-        r"Method & PTQ & QAT & $W$ & $p_{\mathrm{Bonf}}$ "
-        r"& $d$ & $\rho_{\mathrm{stab}}$ \\",
-        r"\midrule",
-    ]
-
-    prev_method = None
-    for method in methods:
-        if prev_method is not None:
-            lines.append(r"\addlinespace")
-        for ptq_v, qat_v in _PTQ_QAT_LABEL_PAIRS:
-            pair_key  = f"{ptq_v}_vs_{qat_v}"
-            row       = ptq_vs_qat.get(pair_key, {}).get(method)
-            if row is None:
+            if len(rhos) < 2:
+                entries[(vname, family)] = {
+                    "rho": None, "ci_low": None, "ci_high": None,
+                    "n":     len(rhos),
+                    "label": "insufficient_data",
+                    "methods": method_labels,
+                }
+                raw_ps.append(float("nan"))
+                pv_keys.append((vname, family))
                 continue
-            ptq_label = _VARIANT_DISPLAY.get(ptq_v, ptq_v)
-            qat_label = _VARIANT_DISPLAY.get(qat_v, qat_v)
-            p_b       = row.get("wilcoxon_p_bonferroni")
-            sig       = r"$^{*}$" if (p_b is not None and not np.isnan(p_b) and p_b < 0.05) else ""
-            p_b_str   = f"{p_b:.4f}{sig}" if (p_b is not None and not np.isnan(p_b)) else r"\textit{n/a}"
-            w_str     = (f"{row['wilcoxon_stat']:.1f}"
-                         if (row.get("wilcoxon_stat") is not None
-                             and not np.isnan(row["wilcoxon_stat"])) else r"\textit{n/a}")
-            d_val     = row.get("cohens_d")
-            d_str     = f"{d_val:.3f}" if (d_val is not None and not np.isnan(d_val)) else r"\textit{n/a}"
-            rho_stab  = row.get("spearman_rho_stability")
-            rho_str   = (f"{rho_stab:.3f}"
-                         if (rho_stab is not None and not np.isnan(rho_stab)) else r"\textit{n/a}")
-            lines.append(
-                f"{method} & {ptq_label} & {qat_label} & {w_str} "
-                f"& {p_b_str} & {d_str} & {rho_str} \\\\"
+
+            ci_res = _scipy_bootstrap(
+                (np.array(rhos, dtype=float),),
+                np.mean,
+                n_resamples=2000,
+                confidence_level=0.95,
+                method="percentile",
+                random_state=42,
             )
-        prev_method = method
 
-    lines += [
-        r"\bottomrule",
-        r"\end{tabular}",
-        r"\end{table}",
-        "",
-    ]
+            diffs = [r - 1.0 for r in rhos]
+            try:
+                w_stat, w_p = _sp_wilcoxon(diffs, alternative="less")
+            except ValueError:
+                w_stat = w_p = float("nan")
 
-    return "\n".join(lines)
+            entries[(vname, family)] = {
+                "rho":     round(float(np.mean(rhos)), 4),
+                "ci_low":  round(float(ci_res.confidence_interval.low),  4),
+                "ci_high": round(float(ci_res.confidence_interval.high), 4),
+                "n":       len(rhos),
+                "wilcoxon_stat":  (round(float(w_stat), 4)
+                                   if not np.isnan(w_stat) else None),
+                "wilcoxon_p_raw": (round(float(w_p), 6)
+                                   if not np.isnan(w_p) else None),
+                "methods": method_labels,
+            }
+            raw_ps.append(float(w_p) if not np.isnan(w_p) else float("nan"))
+            pv_keys.append((vname, family))
+
+    bonf_ps = bonferroni_correct(raw_ps)
+    for (vname, family), p_b in zip(pv_keys, bonf_ps):
+        e = entries.get((vname, family))
+        if e is None or e.get("rho") is None:
+            continue
+        e["wilcoxon_p_bonferroni"] = (round(float(p_b), 6)
+                                       if not np.isnan(p_b) else None)
+        e["significant"] = (not np.isnan(p_b) and float(p_b) < 0.05)
+
+    family_results: dict = {
+        fam: {vn: entries[(vn, fam)] for vn in _VARIANTS_ORDER
+              if (vn, fam) in entries}
+        for fam in _FAMILIES
+    }
+
+    sum_path   = _RES_DIR / "stability_summary.csv"
+    agg_table3: dict = {}
+    if sum_path.exists():
+        for _, row in pd.read_csv(sum_path).iterrows():
+            vn = str(row["variant"])
+            m  = str(row["method"])
+            agg_table3.setdefault(vn, {})[m] = {
+                "mean_rho":               float(row["mean_rho"]),
+                "p_bonferroni":           float(row["p_bonferroni"]),
+                "significant_bonferroni": bool(row["significant_bonferroni"]),
+            }
+
+    payload = {
+        "gradient_family":    family_results["gradient"],
+        "perturbation_family": family_results["perturbation"],
+        "aggregate_table3":   agg_table3,
+    }
+    json_path = _RES_DIR / "stability_by_family.json"
+    with open(json_path, "w", encoding="utf-8") as _f:
+        _json.dump(payload, _f, indent=2)
+    print(f"\n  stability_by_family.json -> {json_path}")
+
+    def _csv_rows(family: str) -> list:
+        rows = []
+        for vn in _VARIANTS_ORDER:
+            e     = family_results[family].get(vn, {})
+            vlabel = _VARIANT_DISPLAY.get(vn, vn)
+            lbl    = e.get("label", "")
+            if lbl in ("STE_PROXY_INVALID", "insufficient_data") or e.get("rho") is None:
+                rows.append({
+                    "variant": vlabel,
+                    "rho": "N/A", "ci_low": "N/A", "ci_high": "N/A",
+                    "n": e.get("n", ""),
+                    "methods": ",".join(e.get("methods", [])),
+                    "significant_bonferroni": "",
+                    "note": lbl,
+                })
+            else:
+                rows.append({
+                    "variant": vlabel,
+                    "rho":     round(e["rho"],     4),
+                    "ci_low":  round(e["ci_low"],  4),
+                    "ci_high": round(e["ci_high"], 4),
+                    "n":       e["n"],
+                    "methods": ",".join(e.get("methods", [])),
+                    "significant_bonferroni": bool(e.get("significant", False)),
+                    "note": "",
+                })
+        return rows
+
+    for family, fname in (("gradient", "table3a_gradient"),
+                          ("perturbation", "table3b_perturbation")):
+        csv_path = _RES_DIR / f"{fname}.csv"
+        pd.DataFrame(_csv_rows(family)).to_csv(csv_path, index=False, encoding="utf-8")
+        print(f"  {fname}.csv -> {csv_path}")
+
+    if sum_path.exists():
+        agg_path = _RES_DIR / "table3_aggregate_appendix.csv"
+        _shutil.copy2(sum_path, agg_path)
+        print(f"  table3_aggregate_appendix.csv -> {agg_path}")
+
+    for family in _FAMILIES:
+        _sample = next(
+            (e for e in family_results[family].values() if e.get("methods")), {}
+        )
+        methods_str = ", ".join(_sample.get("methods", ["?"]))
+        print(f"\n  {family.upper()} family (methods: {methods_str})")
+        print(f"  {'variant':22s}  {'rho':>6s}  {'95% CI':^15s}  sig?")
+        for vn in _VARIANTS_ORDER:
+            e     = family_results[family].get(vn, {})
+            vlab  = _VARIANT_DISPLAY.get(vn, vn)
+            lbl   = e.get("label", "")
+            if lbl == "STE_PROXY_INVALID":
+                print(f"  {vlab:22s}  {'N/A':>6s}  {'':15s}  STE")
+            elif e.get("rho") is None:
+                print(f"  {vlab:22s}  {'N/A':>6s}  {'':15s}  {lbl}")
+            else:
+                ci_s = f"[{e['ci_low']:.3f},{e['ci_high']:.3f}]"
+                sig  = "*" if e.get("significant") else " "
+                print(f"  {vlab:22s}  {e['rho']:6.3f}  {ci_s:15s}  {sig}")
 
 def run_full_stability_stats():
     import pandas as pd
@@ -953,10 +1052,6 @@ def run_full_stability_stats():
         _json.dump(full_stats, _f, indent=2)
     print(f"\n  stability_full_stats.json -> {json_path}")
 
-    tex     = _build_latex_stability_tables(per_variant, ptq_vs_qat, METHODS, VARIANTS)
-    tex_path = _RES_DIR / "stability_table.tex"
-    tex_path.write_text(tex, encoding="utf-8")
-    print(f"  stability_table.tex       -> {tex_path}")
 
     hdr = (f"\n  {'variant':22s}  {'method':5s}  {'rho':>6s}  "
            f"{'95% CI':^15s}  {'W':>8s}  {'p_Bonf':>9s}  sig?")
