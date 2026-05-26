@@ -322,6 +322,15 @@ def run_stress_test_experiment(version_key, tests=None):
             _seed_base = ModelManager.load_model(str(SEEDED_MODEL_DIRS[_seed]), device=torch.device("cpu"))
             _seed_models, _seed_fp16_map = _build_models(_seed_base)
 
+            _qat_clean_dir = Path(__file__).resolve().parent.parent / "models" / f"qat_seed{_seed}_clean"
+            if _qat_clean_dir.exists():
+                _qat_model = ModelManager.load_model(str(_qat_clean_dir), device=torch.device("cpu"))
+                _seed_models["qat_fp32"] = _qat_model
+                _seed_fp16_map["qat_fp32"] = False
+                print(f"    QAT-FP32 loaded for seed {_seed}: {_qat_clean_dir.name}")
+            else:
+                print(f"    [SKIP] QAT-FP32 not found for seed {_seed}: {_qat_clean_dir}")
+
             probe_results = {}
             for precision, model in _seed_models.items():
                 use_fp16 = _seed_fp16_map.get(precision, False)

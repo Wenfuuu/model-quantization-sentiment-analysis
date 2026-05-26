@@ -567,7 +567,8 @@ def run_faithfulness_evaluation(
     def _build_ptq(precision):
         ptq = PTQQuantizer(fp32_base.model)
         m, _ = getattr(ptq, f"quantize_{precision}")()
-        return BaseModel(m, fp32_base.tokenizer, device=fp32_base.device)
+        device = torch.device("cpu") if precision == "int8" else fp32_base.device
+        return BaseModel(m, fp32_base.tokenizer, device=device)
 
     VARIANTS = [
         ("fp32",          lambda: fp32_base,           False),
