@@ -1,7 +1,66 @@
+import json
+from pathlib import Path
+
 import pandas as pd
 
 
-def generate_comparison_report(fp32_results, fp16_results, int8_results, int4_results, 
+def render_qat_drift_decomposition(
+    json_path=None,
+    csv_path=None,
+):
+    if json_path is None or csv_path is None:
+        _project_root = Path(__file__).resolve().parent.parent.parent
+        _res_dir = _project_root / "results"
+        if json_path is None:
+            json_path = _res_dir / "qat_drift_decomposition.json"
+        if csv_path is None:
+            csv_path = _res_dir / "qat_drift_decomposition.csv"
+
+    json_path = Path(json_path)
+    csv_path  = Path(csv_path)
+
+    if not json_path.exists() or not csv_path.exists():
+        print(
+            f"  [WARN] Decomposition artifacts missing "
+            f"(expected {json_path.name} and {csv_path.name}). "
+            "Run Stability Analysis first (Option [3] -> Stability Analysis)."
+        )
+        return None
+
+    with open(json_path, "r", encoding="utf-8") as _f:
+        payload = json.load(_f)
+    df = pd.read_csv(csv_path)
+
+    print("\n  QAT-FP32 Drift Decomposition (per attribution method)")
+    print("  " + "-" * 96)
+    print(f"  {payload.get('_meta', {}).get('definition', '')}")
+    print("  " + "-" * 96)
+    print(
+        f"  {'method':5s}  {'n':>4s}  "
+        f"{'rho(Ctrl)':>9s}  {'rho(QAT)':>8s}  "
+        f"{'Total':>16s}  {'Training':>16s}  {'FakeQuant':>16s}  "
+        f"{'Train%':>6s}  {'FQ%':>6s}  {'p(FQ)':>8s}"
+    )
+    for _, row in df.iterrows():
+        total_str = f"{row['total_drift']:.3f} [{row['total_ci95_lo']:.3f},{row['total_ci95_hi']:.3f}]"
+        train_str = f"{row['training_component']:.3f} [{row['training_ci95_lo']:.3f},{row['training_ci95_hi']:.3f}]"
+        fq_str    = f"{row['fakequant_residual']:.3f} [{row['fakequant_ci95_lo']:.3f},{row['fakequant_ci95_hi']:.3f}]"
+        print(
+            f"  {row['method']:5s}  {int(row['n_paired']):>4d}  "
+            f"{row['rho_fp32_control']:9.3f}  {row['rho_qat_fp32']:8.3f}  "
+            f"{total_str:>16s}  {train_str:>16s}  {fq_str:>16s}  "
+            f"{row['training_share']*100:6.1f}  {row['fakequant_share']*100:6.1f}  "
+            f"{row['residual_wilcoxon_p']:8.4f}"
+        )
+    print("  " + "-" * 96)
+    print("  Total = 1 - rho(FP32, QAT-FP32). Training = 1 - rho(FP32, FP32-Ctrl).")
+    print("  FakeQuant = rho(FP32-Ctrl) - rho(QAT-FP32). Shares are means of components / mean total.")
+    print(f"  Source: {payload.get('_meta', {}).get('source', csv_path)}")
+
+    return df
+
+
+def generate_comparison_report(fp32_results, fp16_results, int8_results, int4_results,
                                fp32_size_mb, fp16_size_mb, int8_size_mb, int4_size_mb):
     comparison_data = {
         "Metric": [

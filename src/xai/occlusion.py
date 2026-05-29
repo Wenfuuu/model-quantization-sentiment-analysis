@@ -48,6 +48,7 @@ def run_occlusion_attribution():
     _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
     _FP32_DIR = _PROJECT_ROOT / "models" / "fp32_seed42"
     _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / "qat_seed42_clean"
+    _FP32_CONTROL_DIR = _PROJECT_ROOT / "models" / "fp32_control_seed42"
     _MODELS_DIR = _PROJECT_ROOT / "models"
     _OUT_DIR = _PROJECT_ROOT / "results" / "attributions"
     _LOG_PATH = _OUT_DIR / "occ_errors.log"
@@ -102,6 +103,8 @@ def run_occlusion_attribution():
         ("qat_onnx_fp16", lambda: _load_onnx("fp16"), True),
         ("qat_onnx_int8", lambda: _load_onnx("int8"), False),
         ("qat_onnx_int4", lambda: _load_onnx("int4"), False),
+        ("fp32_control",  lambda: (ModelManager.load_model(str(_FP32_CONTROL_DIR))
+                                   if _FP32_CONTROL_DIR.exists() else None), False),
     ]
 
     n_variants = len(VARIANTS)

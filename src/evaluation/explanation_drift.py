@@ -676,6 +676,132 @@ def run_stability_analysis():
     run_full_stability_stats()
     compute_stability_by_family()
     compute_power_analysis()
+    decompose_qat_drift()
+
+
+def decompose_qat_drift(
+    per_sample_csv: Optional[Path] = None,
+    out_dir: Optional[Path] = None,
+) -> Optional[dict]:
+    import json as _json
+    import pandas as pd
+    from scipy.stats import wilcoxon as _sp_wilcoxon
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    _RES_DIR = out_dir if out_dir is not None else (_PROJECT_ROOT / "results")
+    per_path = per_sample_csv if per_sample_csv is not None else (_RES_DIR / "stability_perSample.csv")
+
+    if not Path(per_path).exists():
+        print(f"  [WARN] {per_path} not found — run Stability Analysis first.")
+        return None
+
+    df = pd.read_csv(per_path)
+    needed = {"qat_fp32", "fp32_control"}
+    have = set(df["variant"].unique().tolist())
+    missing = needed - have
+    if missing:
+        print(
+            f"  [WARN] Missing variants {sorted(missing)} in {per_path.name}. "
+            "Run LIME/SHAP/Occlusion attributions on the fp32_control checkpoint, "
+            "then re-run Stability Analysis."
+        )
+        return None
+
+    methods = sorted(df["method"].unique().tolist())
+    rows: list = []
+
+    for method in methods:
+        ctrl = df[(df["method"] == method) & (df["variant"] == "fp32_control")]
+        qat  = df[(df["method"] == method) & (df["variant"] == "qat_fp32")]
+        merged = ctrl.merge(qat, on="sample_id", suffixes=("_ctrl", "_qat"))
+        if merged.empty:
+            continue
+        merged = merged.dropna(subset=["spearman_rho_ctrl", "spearman_rho_qat"])
+        if len(merged) < 2:
+            continue
+
+        rho_ctrl = merged["spearman_rho_ctrl"].astype(float).to_numpy()
+        rho_qat  = merged["spearman_rho_qat"].astype(float).to_numpy()
+
+        total_drift    = 1.0 - rho_qat
+        training_drift = 1.0 - rho_ctrl
+        fakequant_residual = rho_ctrl - rho_qat
+
+        total_mean    = float(np.mean(total_drift))
+        train_mean    = float(np.mean(training_drift))
+        residual_mean = float(np.mean(fakequant_residual))
+
+        denom = total_mean if abs(total_mean) > 1e-12 else float("nan")
+        train_share    = float(train_mean    / denom) if not np.isnan(denom) else float("nan")
+        residual_share = float(residual_mean / denom) if not np.isnan(denom) else float("nan")
+
+        total_lo,    total_hi    = _scipy_bootstrap_ci(total_drift.tolist(),       n_resamples=2000)
+        train_lo,    train_hi    = _scipy_bootstrap_ci(training_drift.tolist(),    n_resamples=2000)
+        residual_lo, residual_hi = _scipy_bootstrap_ci(fakequant_residual.tolist(), n_resamples=2000)
+
+        try:
+            w_stat, w_p = _sp_wilcoxon(fakequant_residual)
+            w_stat = float(w_stat)
+            w_p    = float(w_p)
+        except ValueError:
+            w_stat = float("nan")
+            w_p    = float("nan")
+
+        rows.append({
+            "method":               method,
+            "n_paired":             int(len(merged)),
+            "rho_fp32_control":     round(float(np.mean(rho_ctrl)), 4),
+            "rho_qat_fp32":         round(float(np.mean(rho_qat)),  4),
+            "total_drift":          round(total_mean,    4),
+            "total_ci95_lo":        round(total_lo,      4),
+            "total_ci95_hi":        round(total_hi,      4),
+            "training_component":   round(train_mean,    4),
+            "training_ci95_lo":     round(train_lo,      4),
+            "training_ci95_hi":     round(train_hi,      4),
+            "fakequant_residual":   round(residual_mean, 4),
+            "fakequant_ci95_lo":    round(residual_lo,   4),
+            "fakequant_ci95_hi":    round(residual_hi,   4),
+            "training_share":       round(train_share,    4),
+            "fakequant_share":      round(residual_share, 4),
+            "residual_wilcoxon_stat": round(w_stat, 4),
+            "residual_wilcoxon_p":    round(w_p,    6),
+        })
+
+    if not rows:
+        print("  [WARN] No paired (fp32_control, qat_fp32) samples found.")
+        return None
+
+    df_dec = pd.DataFrame(rows)
+    csv_path = _RES_DIR / "qat_drift_decomposition.csv"
+    df_dec.to_csv(csv_path, index=False, encoding="utf-8")
+    print(f"\n  QAT-FP32 drift decomposition saved -> {csv_path}")
+
+    payload = {
+        "_meta": {
+            "definition": (
+                "total_drift = 1 - rho(FP32 vs QAT-FP32);  "
+                "training_component = 1 - rho(FP32 vs FP32-Control);  "
+                "fakequant_residual = rho(FP32-Control) - rho(QAT-FP32);  "
+                "total = training_component + fakequant_residual (per sample, then averaged)."
+            ),
+            "source": str(per_path),
+        },
+        "per_method": {r["method"]: {k: v for k, v in r.items() if k != "method"} for r in rows},
+    }
+    json_path = _RES_DIR / "qat_drift_decomposition.json"
+    with open(json_path, "w", encoding="utf-8") as _f:
+        _json.dump(payload, _f, indent=2)
+    print(f"  QAT-FP32 drift decomposition JSON saved -> {json_path}")
+
+    print(f"\n  {'method':5s}  {'rho_ctrl':>8s}  {'rho_qat':>8s}  "
+          f"{'total':>7s}  {'train':>7s}  {'fq':>7s}  {'train%':>7s}  {'fq%':>7s}")
+    for r in rows:
+        print(f"  {r['method']:5s}  {r['rho_fp32_control']:8.3f}  {r['rho_qat_fp32']:8.3f}  "
+              f"{r['total_drift']:7.3f}  {r['training_component']:7.3f}  "
+              f"{r['fakequant_residual']:7.3f}  "
+              f"{r['training_share']*100:6.1f}%  {r['fakequant_share']*100:6.1f}%")
+
+    return payload
 
 _VARIANT_DISPLAY = {
     "ptq_fp16":      "PTQ-FP16",

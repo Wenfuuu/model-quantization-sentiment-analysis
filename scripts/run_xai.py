@@ -1273,6 +1273,23 @@ def run_ig_metrics_diagnostics(version_key, base_precision, variant_precision, n
     print(f"  Saved IG metrics: {output_path}")
 
 def run_xai_diagnostics():
+    print("\n  Select Diagnostics:")
+    print("  [1] Word-Subword Alignment")
+    print("  [2] Attention Diagnostics")
+    print("  [3] IG Metrics")
+    print("  [4] All (1+2+3)")
+    print("  [5] QAT drift decomposition (FP32-Control vs QAT-FP32)")
+
+    diag_choice = input("\n  Enter choice (1/2/3/4/5): ").strip()
+
+    if diag_choice == "5":
+        from src.evaluation.explanation_drift import decompose_qat_drift
+        from src.visualization.reports import render_qat_drift_decomposition
+        decompose_qat_drift()
+        render_qat_drift_decomposition()
+        print_section("QAT DRIFT DECOMPOSITION COMPLETED")
+        return
+
     experiment_key, precisions, num_samples, divergence_samples = interactive_menu()
 
     print("\n" + "=" * 80)
@@ -1283,14 +1300,6 @@ def run_xai_diagnostics():
     else:
         print(f"Mode: Auto-select ({num_samples} samples)")
     print("=" * 80)
-
-    print("\n  Select Diagnostics:")
-    print("  [1] Word-Subword Alignment")
-    print("  [2] Attention Diagnostics")
-    print("  [3] IG Metrics")
-    print("  [4] All")
-
-    diag_choice = input("\n  Enter choice (1/2/3/4): ").strip()
 
     if diag_choice in ("1", "4"):
         run_alignment_diagnostics(experiment_key, num_samples, divergence_samples)
