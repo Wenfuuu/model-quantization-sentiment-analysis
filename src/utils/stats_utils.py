@@ -102,3 +102,23 @@ def cohens_d(a, b) -> float:
         return float("nan")
 
     return round(mean_diff / pooled_sd, 6)
+
+def rank_biserial_one_sample(values, mu: float = 1.0) -> float:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    diffs = arr - float(mu)
+    nonzero = diffs[diffs != 0.0]
+    n = len(nonzero)
+
+    if n < 1:
+        return float("nan")
+
+    ranks = _sp_stats.rankdata(np.abs(nonzero))
+    w_pos = float(np.sum(ranks[nonzero > 0]))
+    w_neg = float(np.sum(ranks[nonzero < 0]))
+    total = n * (n + 1) / 2.0
+
+    if total == 0.0:
+        return float("nan")
+
+    return round((w_pos - w_neg) / total, 6)

@@ -90,3 +90,33 @@ DATASET_PATHS = {
     "smsa_valid": BASE_DIR / "datasets" / "valid.tsv",
     "tweets": BASE_DIR / "datasets" / "INA_TweetsPPKM_Labeled_Pure.csv",
 }
+
+DEPLOYMENT_STABILITY_RHO_ACCEPTABLE = 0.90
+DEPLOYMENT_AGREEMENT_MIN = 0.97
+DEPLOYMENT_F1_DROP_TOLERANCE = 0.01
+DEPLOYMENT_ECE_MAX = 0.08
+DEPLOYMENT_LATENCY_CRITICAL_MS = 15.0
+DEPLOYMENT_SIZE_CRITICAL_MB = 200.0
+DEPLOYMENT_FAITHFULNESS_COMP_MIN = 0.05
+
+DEPLOYMENT_VARIANTS = (
+    "fp32",
+    "ptq_fp16",
+    "ptq_int8",
+    "ptq_int4",
+    "qat_fp32",
+    "qat_onnx_fp16",
+    "qat_onnx_int8",
+    "qat_onnx_int4",
+)
+DEPLOYMENT_VARIANT_ALIASES = {
+    "FP32":          "fp32",
+    "PTQ-FP16":      "ptq_fp16",
+    "PTQ-INT8":      "ptq_int8",
+    "PTQ-INT4":      "ptq_int4",
+    "QAT-FP32":      "qat_fp32",
+    "QAT-ONNX-FP16": "qat_onnx_fp16",
+    "QAT-ONNX-INT8": "qat_onnx_int8",
+    "QAT-ONNX-INT4": "qat_onnx_int4",
+}
+DEPLOYMENT_RECOMMENDATION_DIR = BASE_DIR / "outputs" / "deployment-recommendation"
