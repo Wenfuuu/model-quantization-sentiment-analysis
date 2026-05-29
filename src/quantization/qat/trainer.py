@@ -34,8 +34,9 @@ class QATTrainer:
             num_labels=len(LABELS),
         )
 
-        self.model.qconfig = torch.quantization.get_default_qat_qconfig("fbgemm")
-        torch.quantization.prepare_qat(self.model, inplace=True)
+        if config.fake_quant:
+            self.model.qconfig = torch.quantization.get_default_qat_qconfig("fbgemm")
+            torch.quantization.prepare_qat(self.model, inplace=True)
 
         if config.prepared_checkpoint:
             state = torch.load(config.prepared_checkpoint, map_location="cpu")
@@ -366,14 +367,18 @@ def train_qat_seed(
     weight_decay: float = 0.01,
     max_length: int = 128,
     qat_precision: str = "int8",
+    fake_quant: bool = True,
 ) -> dict:
     print(f"\n{'='*70}")
-    print(f"#  QAT  SEED {seed}")
+    print(f"#  {'QAT' if fake_quant else 'FP32-CONTROL'}  SEED {seed}")
     print(f"{'='*70}\n")
 
     _set_all_seeds(seed)
 
-    if qat_precision == "int8":
+    if not fake_quant:
+        obs_dir   = models_dir / f"fp32_control_seed{seed}"
+        clean_dir = models_dir / f"fp32_control_seed{seed}"
+    elif qat_precision == "int8":
         obs_dir   = models_dir / f"qat_seed{seed}_with_observers"
         clean_dir = models_dir / f"qat_seed{seed}_clean"
     else:
@@ -393,7 +398,12 @@ def train_qat_seed(
         fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
     )
 
-    apply_qat_config_precision(model, qat_precision)
+    if fake_quant:
+        apply_qat_config_precision(model, qat_precision)
+    else:
+        if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
+            print("  [control] Embedding layer treated identically to QAT (excluded from quant — n/a since no fake-quant)")
+        print("  [control] Fake-quant DISABLED — continued FP32 fine-tune (no observers attached)")
     model = model.to(device)
 
     print("Loading datasets ...")
@@ -445,44 +455,77 @@ def train_qat_seed(
             best_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             print(f"  [ckpt] New best val wF1={best_val_wf1:.4f}")
 
-    observer_stats = _collect_observer_stats(model, seed, qat_precision)
+    if fake_quant:
+        observer_stats = _collect_observer_stats(model, seed, qat_precision)
 
-    print(f"\nSaving with-observers checkpoint -> {obs_dir}")
-    torch.save(best_state_dict, obs_dir / "qat_state_dict.pt")
-    tokenizer.save_pretrained(obs_dir)
-    model.config.save_pretrained(obs_dir)
-    with open(obs_dir / "qat_info.json", "w", encoding="utf-8") as f:
-        json.dump({
-            "source_fp32_checkpoint": str(fp32_ckpt),
-            "seed": seed,
-            "precision": qat_precision,
-            "best_val_weighted_f1": best_val_wf1,
-            "qconfig": QAT_PRECISION_CONFIGS[qat_precision]["description"],
-            "embeddings_excluded": True,
-            "training_history": history,
-        }, f, indent=2)
+        print(f"\nSaving with-observers checkpoint -> {obs_dir}")
+        torch.save(best_state_dict, obs_dir / "qat_state_dict.pt")
+        tokenizer.save_pretrained(obs_dir)
+        model.config.save_pretrained(obs_dir)
+        with open(obs_dir / "qat_info.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "source_fp32_checkpoint": str(fp32_ckpt),
+                "seed": seed,
+                "precision": qat_precision,
+                "best_val_weighted_f1": best_val_wf1,
+                "qconfig": QAT_PRECISION_CONFIGS[qat_precision]["description"],
+                "embeddings_excluded": True,
+                "training_history": history,
+            }, f, indent=2)
 
-    obs_log_path = obs_dir / "qat_observer_log.json"
-    with open(obs_log_path, "w", encoding="utf-8") as f:
-        json.dump(observer_stats, f, indent=2)
-    print(f"  Observer log saved -> {obs_log_path}")
+        obs_log_path = obs_dir / "qat_observer_log.json"
+        with open(obs_log_path, "w", encoding="utf-8") as f:
+            json.dump(observer_stats, f, indent=2)
+        print(f"  Observer log saved -> {obs_log_path}")
 
-    print(f"Saving clean checkpoint -> {clean_dir}")
-    clean_state = strip_observers(best_state_dict)
-    ckpt_path = models_dir / f"qat_{qat_precision}_seed{seed}.pt"
-    torch.save(clean_state, ckpt_path)
-    print(f"  Named checkpoint saved -> {ckpt_path}")
-    clean_model = AutoModelForSequenceClassification.from_pretrained(
-        fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
-    )
-    missing, unexpected = clean_model.load_state_dict(clean_state, strict=False)
-    if missing:
-        print(f"  [warn] {len(missing)} missing keys in clean model")
-    print(f"  Skipped {len(unexpected)} observer keys")
-    clean_model.save_pretrained(clean_dir)
-    tokenizer.save_pretrained(clean_dir)
+        print(f"Saving clean checkpoint -> {clean_dir}")
+        clean_state = strip_observers(best_state_dict)
+        ckpt_path = models_dir / f"qat_{qat_precision}_seed{seed}.pt"
+        torch.save(clean_state, ckpt_path)
+        print(f"  Named checkpoint saved -> {ckpt_path}")
+        clean_model = AutoModelForSequenceClassification.from_pretrained(
+            fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
+        )
+        missing, unexpected = clean_model.load_state_dict(clean_state, strict=False)
+        if missing:
+            print(f"  [warn] {len(missing)} missing keys in clean model")
+        print(f"  Skipped {len(unexpected)} observer keys")
+        clean_model.save_pretrained(clean_dir)
+        tokenizer.save_pretrained(clean_dir)
+    else:
+        n_obs = sum(1 for m in model.modules() if isinstance(m, FakeQuantize))
+        assert n_obs == 0, (
+            f"Control run expected zero FakeQuantize modules, found {n_obs}. "
+            "Observer attachment must be guarded by fake_quant=False."
+        )
+        print(f"  [control] Observer count check passed: {n_obs} FakeQuantize modules attached")
 
-    clean_model = clean_model.to(device)
+        print(f"\nSaving FP32-control checkpoint -> {clean_dir}")
+        clean_model = AutoModelForSequenceClassification.from_pretrained(
+            fp32_ckpt, num_labels=_NUM_LABELS, ignore_mismatched_sizes=True,
+        )
+        missing, unexpected = clean_model.load_state_dict(best_state_dict, strict=False)
+        if missing:
+            print(f"  [warn] {len(missing)} missing keys in control model")
+        if unexpected:
+            print(f"  [warn] {len(unexpected)} unexpected keys in control model")
+        clean_model.save_pretrained(clean_dir)
+        tokenizer.save_pretrained(clean_dir)
+        with open(clean_dir / "control_info.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "source_fp32_checkpoint": str(fp32_ckpt),
+                "seed": seed,
+                "fake_quant": False,
+                "n_fake_quant_modules": n_obs,
+                "best_val_weighted_f1": best_val_wf1,
+                "embeddings_excluded": True,
+                "training_history": history,
+                "note": (
+                    "Continued FP32 fine-tune control matching the QAT extra-"
+                    "training schedule (epochs/lr/batch/seq-len/optimizer/"
+                    "embedding handling) WITHOUT fake-quant observers."
+                ),
+            }, f, indent=2)
     print(f"\nEvaluating clean model on SmSA test ...")
 
     true_labels, pred_labels, probs = _collect_predictions(clean_model, test_loader, device)
@@ -542,12 +585,13 @@ def train_qat_seed(
 
     results = {
         "seed": seed,
-        "qat_precision": qat_precision,
+        "qat_precision": qat_precision if fake_quant else "fp32_control",
+        "fake_quant": fake_quant,
         "source_fp32_checkpoint": str(fp32_ckpt),
         "hyperparameters": {
             "epochs": epochs, "lr": lr, "weight_decay": weight_decay,
             "batch_size": batch_size, "max_length": max_length,
-            "device": str(device),
+            "device": str(device), "fake_quant": fake_quant,
         },
         "best_val_weighted_f1": best_val_wf1,
         "training_history": history,
@@ -556,7 +600,8 @@ def train_qat_seed(
         "test_macro_f1": test_macro_f1,
         "smsa_agreement_with_fp32": agreement_rate,
     }
-    with open(clean_dir / "qat_results.json", "w", encoding="utf-8") as f:
+    results_filename = "finetune_results.json" if not fake_quant else "qat_results.json"
+    with open(clean_dir / results_filename, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
     return results

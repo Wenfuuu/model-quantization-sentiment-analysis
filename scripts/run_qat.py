@@ -77,6 +77,11 @@ from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
 from src.quantization.qat.trainer import train_qat_seed
 from src.quantization.qat.eager import qat_onnx_single_seed
+from src.utils.seed_aggregation import (
+    aggregate_seed_results,
+    load_seed_results,
+    save_aggregated_results,
+)
 from src.visualization import QuantizationPlotter
 from scripts.run_xai import generate_qat_divergences
 
@@ -257,6 +262,104 @@ def run_multiseed_qat(
     with open(agg_path, "w", encoding="utf-8") as f:
         json.dump(agg, f, indent=2, ensure_ascii=False)
     print(f"  Aggregated results saved -> {agg_path}")
+
+def run_multiseed_fp32_control(
+    seeds: list = None,
+    *,
+    epochs: int = 3,
+    lr: float = 1e-5,
+    batch_size: int = 16,
+) -> None:
+    """Continue FP32 fine-tune on the SAME schedule QAT uses, but WITHOUT
+    fake-quant observers — the control that splits the QAT-FP32 stability
+    drop into 'extra training' vs 'fake-quant gradient reshaping'."""
+
+    if seeds is None:
+        seeds = list(TRAINING_SEEDS)
+
+    train_csv = _DATA_DIR / "smsa_train_v2.csv"
+    val_csv   = _DATA_DIR / "smsa_val_v2.csv"
+    test_csv  = _DATA_DIR / "smsa_test_v2.csv"
+
+    for p in (train_csv, val_csv, test_csv):
+        if not p.exists():
+            raise FileNotFoundError(
+                f"Preprocessed dataset not found: {p}\n"
+                "Run scripts/prepare_datasets.py first."
+            )
+
+    if len(seeds) < 3:
+        warnings.warn(
+            f"Only {len(seeds)} seed(s) requested. Publication-grade variance "
+            "estimation requires at least 3 independent training runs.",
+            UserWarning, stacklevel=2,
+        )
+
+    print("\n" + "=" * 70)
+    print("  MULTI-SEED FP32 CONTROL: continued FP32 fine-tune (NO fake-quant)")
+    print(f"  Seeds: {seeds}  |  epochs={epochs}  lr={lr}  batch={batch_size}")
+    print("  Matches QAT extra-training schedule except fake-quant is OFF.")
+    print("=" * 70 + "\n")
+
+    all_results = []
+    for i, seed in enumerate(seeds, 1):
+        print(f"\n{'#'*70}")
+        print(f"#  SEED {i}/{len(seeds)}: {seed}")
+        print(f"{'#'*70}")
+
+        fp32_ckpt = _MODELS_DIR / f"fp32_seed{seed}"
+        result = train_qat_seed(
+            seed,
+            fp32_ckpt=fp32_ckpt,
+            train_csv=train_csv,
+            val_csv=val_csv,
+            test_csv=test_csv,
+            models_dir=_MODELS_DIR,
+            epochs=epochs,
+            lr=lr,
+            batch_size=batch_size,
+            qat_precision="int8",
+            fake_quant=False,
+        )
+        all_results.append(result)
+
+    print("\n" + "=" * 70)
+    print("  MULTI-SEED FP32-CONTROL — AGGREGATED RESULTS")
+    print("=" * 70)
+
+    fp32_accs = {}
+    for r in all_results:
+        fp32_metrics = Path(r["source_fp32_checkpoint"]) / "metrics.json"
+        if fp32_metrics.exists():
+            with open(fp32_metrics) as f:
+                fp32_accs[r["seed"]] = json.load(f).get("accuracy")
+
+    print(f"\n  {'Seed':>6}  {'FP32 Acc':>10}  {'Ctrl Acc':>10}  {'Δ':>8}  {'Agreement':>10}")
+    print("  " + "-" * 56)
+    for r in all_results:
+        s = r["seed"]
+        ctrl_acc = r["test_accuracy"]
+        fp32_acc = fp32_accs.get(s)
+        agr = r["smsa_agreement_with_fp32"]
+        fp32_str  = f"{fp32_acc:.4f}" if fp32_acc is not None else "  n/a"
+        delta_str = f"{(ctrl_acc - fp32_acc):+.4f}" if fp32_acc is not None else "  n/a"
+        agr_str   = f"{agr*100:.2f}%" if agr is not None else "  n/a"
+        print(f"  {s:>6d}  {fp32_str:>10}  {ctrl_acc:>10.4f}  {delta_str:>8}  {agr_str:>10}")
+
+    seed_dirs = [_MODELS_DIR / f"fp32_control_seed{s}" for s in seeds]
+    per_seed_results = load_seed_results(seed_dirs, filename="finetune_results.json")
+    agg = aggregate_seed_results(per_seed_results)
+
+    agg_dir = BASE_DIR / "outputs" / "multi-seed"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    agg_path = agg_dir / "aggregated_fp32_control_results.json"
+    save_aggregated_results(agg, agg_path, exclude_raw=False)
+    print(f"\n  Aggregated results saved -> {agg_path}")
+
+    print("\n" + "=" * 70)
+    print("  Multi-seed FP32 control complete.")
+    print("=" * 70 + "\n")
+
 
 def run_multiseed_qat_onnx(seeds: list = None) -> None:
     """Export clean QAT checkpoints to ONNX, quantise (INT8/FP16/INT4),
@@ -491,8 +594,9 @@ def interactive_menu():
     print("  [2] Multi-Seed QAT (FP32 → QAT-FP32, seeds 42/123/456)")
     print("  [3] Multi-Seed QAT-ONNX (QAT → ONNX export + INT8/FP16/INT4)")
     print("  [4] Generate ECE summary from existing prediction CSVs")
+    print("  [5] Continued FP32 fine-tune control (no fake-quant)")
 
-    pipeline_choice = input("\n  Enter choice (1/2/3/4): ").strip()
+    pipeline_choice = input("\n  Enter choice (1/2/3/4/5): ").strip()
 
     if pipeline_choice == "2":
         return "multiseed", None, None, None, None, None
@@ -500,6 +604,8 @@ def interactive_menu():
         return "multiseed_onnx", None, None, None, None, None
     if pipeline_choice == "4":
         return "generate_ece", None, None, None, None, None
+    if pipeline_choice == "5":
+        return "multiseed_control", None, None, None, None, None
 
     methods = ["eager"]
 
@@ -720,6 +826,16 @@ def main():
         help="Export clean QAT checkpoints to ONNX, quantise, and evaluate",
     )
     parser.add_argument(
+        "--multiseed-control",
+        action="store_true",
+        default=False,
+        help=(
+            "Run multi-seed continued FP32 fine-tune control (no fake-quant) "
+            "matching the QAT extra-training schedule. Splits the QAT-FP32 "
+            "stability drop into 'extra training' vs 'fake-quant'."
+        ),
+    )
+    parser.add_argument(
         "--generate-ece",
         action="store_true",
         default=False,
@@ -737,6 +853,10 @@ def main():
 
     if args.multiseed_qat_onnx:
         run_multiseed_qat_onnx()
+        return
+
+    if args.multiseed_control:
+        run_multiseed_fp32_control(epochs=args.qat_epochs, lr=args.qat_lr)
         return
 
     methods = ["eager"]

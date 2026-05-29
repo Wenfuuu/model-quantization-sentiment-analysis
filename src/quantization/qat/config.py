@@ -19,6 +19,7 @@ class QATConfig:
     learning_rate: float = 1e-5
     warmup_ratio: float = 0.1
     max_grad_norm: float = 1.0
+    fake_quant: bool = True
     device: torch.device = DEVICE
 
     def __post_init__(self) -> None:

@@ -18,6 +18,11 @@ SEEDED_MODEL_DIRS = {
     for seed in TRAINING_SEEDS
 }
 
+SEEDED_CONTROL_MODEL_DIRS = {
+    seed: BASE_DIR / "models" / f"fp32_control_seed{seed}"
+    for seed in TRAINING_SEEDS
+}
+
 LEGACY_MODEL_DIR = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"
 
 HF_DATASET_PATH = BASE_DIR / "datasets" / "hf_smsa"
@@ -40,6 +45,13 @@ EXPERIMENT_CONFIGS = {
         "num_inference_runs": 20,
         "warmup_runs": 5,
     },
+    "fp32_control_smsa": {
+        "model_id": str(BASE_DIR / "models" / "fp32_control_seed42"),
+        "dataset": "smsa",
+        "output_dir": BASE_DIR / "outputs" / "fp32-control-smsa",
+        "num_inference_runs": 20,
+        "warmup_runs": 5,
+    },
 
 }
 
@@ -52,6 +64,19 @@ QAT_EXPERIMENT_CONFIGS = {
         },
         "dataset": "smsa",
         "output_dir": BASE_DIR / "outputs" / "qat-eager-smsa",
+    },
+    "fp32_control_smsa": {
+        "model_paths": {
+            seed: str(SEEDED_CONTROL_MODEL_DIRS[seed]) for seed in TRAINING_SEEDS
+        },
+        "dataset": "smsa",
+        "output_dir": BASE_DIR / "outputs" / "fp32-control-smsa",
+        "description": (
+            "Continued FP32 fine-tune control (no fake-quant) — matches the "
+            "QAT extra-training schedule (epochs/lr/batch/seq-len/optimizer/"
+            "embedding handling) so the QAT-FP32 stability drop can be split "
+            "into 'extra training' vs 'fake-quant gradient reshaping'."
+        ),
     },
 
 }

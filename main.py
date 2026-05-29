@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from scripts.run_ptq import interactive_menu as ptq_menu, run_ptq_experiment, run_multiseed_ptq
 from scripts.run_xai import interactive_menu as xai_menu, run_xai_experiment, run_xai_diagnostics, run_ste_ig_analysis, run_lime_attribution, run_shap_attribution, run_occlusion_attribution, run_ste_calibration, run_random_baselines, run_cross_seed_verification, run_stability_analysis, run_faithfulness_evaluation, compute_cross_method_agreement, probe_attribution_analysis
-from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu, run_multiseed_qat, run_multiseed_qat_onnx, _generate_combined_csv
+from scripts.run_qat import interactive_menu as qat_menu, run_qat_from_menu, run_multiseed_qat, run_multiseed_qat_onnx, run_multiseed_fp32_control, _generate_combined_csv
 from scripts.run_stress_test import interactive_menu as stress_menu, run_stress_test_experiment
 from scripts.finetune_multi_seed import (
     main as finetune_main,
@@ -70,6 +70,11 @@ def run_qat():
     if methods == "multiseed_onnx":
         run_multiseed_qat_onnx()
         print_section("MULTI-SEED QAT-ONNX COMPLETED")
+        return
+
+    if methods == "multiseed_control":
+        run_multiseed_fp32_control()
+        print_section("MULTI-SEED FP32-CONTROL COMPLETED")
         return
 
     if methods == "generate_ece":
