@@ -893,6 +893,8 @@ def run_large_sample_cross_seed_stability(
         aggregate_seed_results,
         save_aggregated_results,
     )
+    from src.utils.stats_utils import rank_biserial_one_sample
+    from src.visualization.reports import render_large_sample_stability
 
     if n_total is None:
         n_total = LARGE_N_STABILITY_SAMPLES
@@ -999,6 +1001,7 @@ def run_large_sample_cross_seed_stability(
                 w_stat, w_p = scipy_wilcoxon(diffs, alternative="less")
             except ValueError:
                 w_stat = w_p = float("nan")
+            eff_r = rank_biserial_one_sample(rhos, mu=1.0)
             seed_sum_rows.append({
                 "seed": seed, "method": method, "variant": vname, "n": len(rhos),
                 "mean_rho": round(float(np.mean(rhos)), 4),
@@ -1010,6 +1013,7 @@ def run_large_sample_cross_seed_stability(
                 "ci95_hi_j5":  round(j5_hi, 4),
                 "wilcoxon_stat": round(float(w_stat), 4),
                 "wilcoxon_p":    round(float(w_p), 6),
+                "effect_r":      eff_r,
             })
             scalar_metrics[f"{method}__{vname}__mean_rho"] = float(np.mean(rhos))
             scalar_metrics[f"{method}__{vname}__mean_j5"]  = float(np.mean(j5s))
@@ -1055,6 +1059,7 @@ def run_large_sample_cross_seed_stability(
             w_stat, w_p = scipy_wilcoxon([r - 1.0 for r in rhos_all], alternative="less")
         except ValueError:
             w_stat = w_p = float("nan")
+        eff_r = rank_biserial_one_sample(rhos_all, mu=1.0)
         aggregate_rows.append({
             "method": method, "variant": vname,
             "n_seeds": len(per_seed_means),
@@ -1069,6 +1074,7 @@ def run_large_sample_cross_seed_stability(
             "pooled_ci95_hi_j5":      round(j5_hi, 4),
             "wilcoxon_stat": round(float(w_stat), 4),
             "wilcoxon_p":    round(float(w_p), 6),
+            "effect_r":      eff_r,
         })
 
     df_agg = pd.DataFrame(aggregate_rows)
@@ -1110,15 +1116,10 @@ def run_large_sample_cross_seed_stability(
     print(f"  payload -> {json_path.name}")
 
     if not df_agg.empty:
-        print(f"\n  {'method':5s}  {'variant':15s}  {'n_seeds':>7s}  {'n':>5s}  "
-              f"{'rho':>6s} [95% CI]              {'J@5':>5s}  p_bonf  sig?")
-        for _, row in df_agg.sort_values(["method", "variant"]).iterrows():
-            sig = "*" if row["significant_bonferroni"] else " "
-            print(f"  {row['method']:5s}  {row['variant']:15s}  "
-                  f"{int(row['n_seeds']):>7d}  {int(row['n_samples_total']):>5d}  "
-                  f"{row['pooled_mean_rho']:6.3f} "
-                  f"[{row['pooled_ci95_lo_rho']:.3f},{row['pooled_ci95_hi_rho']:.3f}]  "
-                  f"{row['pooled_mean_j5']:5.3f}  {row['p_bonferroni']:.4f}  {sig}")
+        render_large_sample_stability(
+            json_path=json_path,
+            csv_path=_ARTIFACT_DIR / "stability_aggregate_acrossSeeds.csv",
+        )
 
     return payload
 
