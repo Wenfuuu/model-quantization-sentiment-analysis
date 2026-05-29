@@ -13,6 +13,9 @@ TARGET_LAYERS = {torch.nn.Linear}
 
 TRAINING_SEEDS = [42, 123, 456]
 
+LARGE_N_STABILITY_SAMPLES = 300
+LARGE_N_STABILITY_MIN_PER_CLASS = 100
+
 SEEDED_MODEL_DIRS = {
     seed: BASE_DIR / "models" / f"fp32_seed{seed}"
     for seed in TRAINING_SEEDS

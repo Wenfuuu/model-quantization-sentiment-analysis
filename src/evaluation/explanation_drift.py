@@ -679,6 +679,454 @@ def run_stability_analysis():
     decompose_qat_drift()
 
 
+def _attribution_filename(method: str, variant: str, sid: int, seed: int) -> str:
+    sfx = "" if seed == 42 else f"_s{seed}"
+    return f"{method}_{variant}{sfx}_{sid}.npy"
+
+
+def _generate_per_seed_attributions(
+    seed: int,
+    samples: List[Tuple[int, str]],
+    methods: Tuple[str, ...],
+    variants: Tuple[str, ...],
+    out_dir: Path,
+) -> dict:
+    import torch
+    from src.config import LABELS, SEEDED_MODEL_DIRS
+    from src.models import ModelManager
+    from src.models.base import BaseModel, OnnxBaseModel
+    from src.quantization.ptq import PTQQuantizer
+    from src.xai.lime_explainer import LIMEExplainer
+    from src.xai.shap_explainer import SHAPExplainer
+    from src.xai.occlusion import OcclusionExplainer
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    _MODELS_DIR = _PROJECT_ROOT / "models"
+
+    fp32_dir = SEEDED_MODEL_DIRS.get(seed)
+    if fp32_dir is None or not Path(fp32_dir).exists():
+        raise FileNotFoundError(
+            f"FP32 model for seed {seed} not found at {fp32_dir}. "
+            "Run [5] Finetune first."
+        )
+
+    print(f"\n  [seed={seed}]  Loading FP32 base: {fp32_dir}")
+    fp32_base = ModelManager.load_model(str(fp32_dir))
+    fp32_base.model.eval()
+
+    qat_clean_dir = _MODELS_DIR / f"qat_seed{seed}_clean"
+
+    def _load_onnx(precision):
+        import onnxruntime as ort
+        onnx_dir = _MODELS_DIR / f"qat_onnx_{precision}_seed{seed}"
+        onnx_file = onnx_dir / f"model_qat_{precision}.onnx"
+        if not onnx_file.exists():
+            return None
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        opts.log_severity_level = 3
+        session = ort.InferenceSession(
+            str(onnx_file), opts, providers=["CPUExecutionProvider"]
+        )
+        return OnnxBaseModel(session, fp32_base.tokenizer, None, torch.device("cpu"))
+
+    def _build_ptq(precision):
+        ptq = PTQQuantizer(fp32_base.model)
+        m, _ = getattr(ptq, f"quantize_{precision}")()
+        device = torch.device("cpu") if precision == "int8" else fp32_base.device
+        return BaseModel(m, fp32_base.tokenizer, device=device)
+
+    variant_builders = {
+        "fp32":          (lambda: fp32_base, False),
+        "ptq_fp16":      (lambda: _build_ptq("fp16"), True),
+        "ptq_int8":      (lambda: _build_ptq("int8"), False),
+        "ptq_int4":      (lambda: _build_ptq("int4"), False),
+        "qat_fp32":      (lambda: (ModelManager.load_model(str(qat_clean_dir))
+                                    if qat_clean_dir.exists() else None), False),
+        "qat_onnx_fp16": (lambda: _load_onnx("fp16"), True),
+        "qat_onnx_int8": (lambda: _load_onnx("int8"), False),
+        "qat_onnx_int4": (lambda: _load_onnx("int4"), False),
+    }
+
+    stats = {"saved": 0, "skipped": 0, "missing_model": 0, "errors": 0}
+
+    for vname in ("fp32",) + tuple(variants):
+        if vname not in variant_builders:
+            print(f"  [seed={seed}]  [SKIP] unknown variant {vname}")
+            continue
+
+        all_done = all(
+            (out_dir / _attribution_filename(m, vname, sid, seed)).exists()
+            for m in methods for sid, _ in samples
+        )
+        if all_done:
+            print(f"  [seed={seed}]  [{vname.upper()}]  all attributions present, skipping load")
+            stats["skipped"] += len(methods) * len(samples)
+            continue
+
+        loader, use_fp16 = variant_builders[vname]
+        print(f"  [seed={seed}]  [{vname.upper()}]  loading model...")
+        model = loader()
+        if model is None:
+            print(f"  [seed={seed}]  [SKIP] {vname}: model not found")
+            stats["missing_model"] += len(methods) * len(samples)
+            continue
+
+        explainers = {}
+        if "lime" in methods:
+            explainers["lime"] = LIMEExplainer(model, LABELS, use_fp16=use_fp16, random_state=42)
+        if "shap" in methods:
+            explainers["shap"] = SHAPExplainer(model, LABELS, use_fp16=use_fp16)
+        if "occ" in methods:
+            explainers["occ"] = OcclusionExplainer(model, LABELS, use_fp16=use_fp16)
+
+        for method in methods:
+            explainer = explainers.get(method)
+            if explainer is None:
+                continue
+            n_method_saved = 0
+            n_method_skip  = 0
+            for sid, text in samples:
+                out_path = out_dir / _attribution_filename(method, vname, sid, seed)
+                if out_path.exists():
+                    n_method_skip += 1
+                    stats["skipped"] += 1
+                    continue
+                try:
+                    if method == "lime":
+                        n_words = max(len(text.split()), 10)
+                        exp = explainer.explain(text, num_features=n_words, num_samples=1000)
+                        pred_idx = int(np.argmax(exp.predict_proba))
+                        scores_dict = dict(exp.as_list(label=pred_idx))
+                        word_scores = np.array(
+                            [scores_dict.get(w, 0.0) for w in text.split()],
+                            dtype=np.float32,
+                        )
+                    elif method == "shap":
+                        sv = explainer.explain(text, max_evals=500)
+                        pred = int(np.argmax(explainer.predict_proba(text)))
+                        sd = {}
+                        for j, tok in enumerate(sv[0].data):
+                            if isinstance(tok, str) and tok.strip():
+                                sd[tok.strip()] = float(sv[0].values[j][pred])
+                        word_scores = np.array(
+                            [sd.get(w, 0.0) for w in text.split()],
+                            dtype=np.float32,
+                        )
+                    else:  # occ
+                        r = explainer.explain(text, window_size=1)
+                        word_scores = np.array(
+                            [s for _, s in r["all_tokens_ordered"]],
+                            dtype=np.float32,
+                        )
+                    np.save(out_path, word_scores)
+                    n_method_saved += 1
+                    stats["saved"] += 1
+                except Exception as exc:
+                    stats["errors"] += 1
+                    err_log = out_dir / f"large_sample_errors_seed{seed}.log"
+                    with open(err_log, "a", encoding="utf-8") as _log:
+                        _log.write(f"{method}\t{vname}\t{sid}\t{type(exc).__name__}: {exc}\n")
+            print(f"  [seed={seed}]  [{vname.upper()}]  {method:4s}: saved={n_method_saved}  skipped={n_method_skip}")
+
+    return stats
+
+
+def _compute_per_seed_stability(
+    seed: int,
+    samples: List[Tuple[int, str]],
+    methods: Tuple[str, ...],
+    variants: Tuple[str, ...],
+    out_dir: Path,
+) -> "pd.DataFrame":
+    import pandas as pd
+
+    rows: list = []
+    for method in methods:
+        for vname in variants:
+            for sid, text in samples:
+                fp32_path = out_dir / _attribution_filename(method, "fp32", sid, seed)
+                var_path  = out_dir / _attribution_filename(method, vname,  sid, seed)
+                if not fp32_path.exists() or not var_path.exists():
+                    continue
+                words = text.split()
+                fp32_s = np.load(fp32_path).astype(np.float64)
+                var_s  = np.load(var_path).astype(np.float64)
+                L = min(len(words), len(fp32_s), len(var_s))
+                if L < 3:
+                    continue
+                words_l = words[:L]
+                rho, _ = spearman_rank_correlation(words_l, fp32_s[:L].tolist(),
+                                                    words_l, var_s[:L].tolist())
+                if np.isnan(rho):
+                    continue
+                j3  = top_k_jaccard(words_l, fp32_s[:L].tolist(), words_l, var_s[:L].tolist(), k=3)
+                j5  = top_k_jaccard(words_l, fp32_s[:L].tolist(), words_l, var_s[:L].tolist(), k=5)
+                j10 = top_k_jaccard(words_l, fp32_s[:L].tolist(), words_l, var_s[:L].tolist(), k=10)
+                rows.append({
+                    "seed": seed, "method": method, "variant": vname,
+                    "sample_id": sid, "spearman_rho": rho,
+                    "jaccard_k3": j3, "jaccard_k5": j5, "jaccard_k10": j10,
+                })
+    return pd.DataFrame(rows)
+
+
+def run_large_sample_cross_seed_stability(
+    n_total: Optional[int] = None,
+    min_per_class: Optional[int] = None,
+    methods: Tuple[str, ...] = ("lime", "occ", "shap"),
+    variants: Tuple[str, ...] = (
+        "ptq_fp16", "ptq_int8", "ptq_int4",
+        "qat_fp32", "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4",
+    ),
+) -> Optional[dict]:
+    import json as _json
+    import pandas as pd
+    from scipy.stats import wilcoxon as scipy_wilcoxon
+    from statsmodels.stats.multitest import multipletests
+    from src.config import (
+        TRAINING_SEEDS,
+        LARGE_N_STABILITY_SAMPLES,
+        LARGE_N_STABILITY_MIN_PER_CLASS,
+    )
+    from src.utils.seed_aggregation import (
+        aggregate_seed_results,
+        save_aggregated_results,
+    )
+
+    if n_total is None:
+        n_total = LARGE_N_STABILITY_SAMPLES
+    if min_per_class is None:
+        min_per_class = LARGE_N_STABILITY_MIN_PER_CLASS
+
+    if len(TRAINING_SEEDS) < 3:
+        warnings.warn(
+            f"TRAINING_SEEDS has {len(TRAINING_SEEDS)} seeds; cross-seed analysis "
+            "requires at least 3. Proceeding anyway.",
+            UserWarning, stacklevel=2,
+        )
+
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+    _DATA_DIR = _PROJECT_ROOT / "data" / "processed"
+    _TEST_CSV = _DATA_DIR / "smsa_test_v2.csv"
+    _VAL_CSV  = _DATA_DIR / "smsa_val_v2.csv"
+    _OUT_DIR  = _PROJECT_ROOT / "results" / "attributions"
+    _ARTIFACT_DIR = _PROJECT_ROOT / "outputs" / "multi-seed" / "large-sample-stability"
+    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+    _ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+    samples = _build_stratified_subsample(
+        _TEST_CSV, _VAL_CSV,
+        n_total=n_total, min_per_class=min_per_class, seed=42,
+    )
+    if not samples:
+        print(f"  [ERROR] Could not build stratified subsample (n_total={n_total})")
+        return None
+
+    df_test = pd.read_csv(_TEST_CSV) if _TEST_CSV.exists() else pd.DataFrame()
+    df_val  = pd.read_csv(_VAL_CSV)  if _VAL_CSV.exists()  else pd.DataFrame()
+    label_lookup = {}
+    if not df_test.empty:
+        for idx, row in df_test.iterrows():
+            label_lookup[int(idx)] = int(row["label"])
+        n_test = len(df_test)
+        if not df_val.empty:
+            for idx, row in df_val.iterrows():
+                label_lookup[int(idx) + n_test] = int(row["label"])
+    class_counts = {0: 0, 1: 0, 2: 0}
+    for sid, _ in samples:
+        lab = label_lookup.get(sid)
+        if lab is not None:
+            class_counts[lab] = class_counts.get(lab, 0) + 1
+    print(f"\n  Large-sample cross-seed stability")
+    print(f"  =================================")
+    print(f"  n_total={len(samples)}  min_per_class={min_per_class}")
+    print(f"  class counts: POS={class_counts.get(0,0)}  NEU={class_counts.get(1,0)}  NEG={class_counts.get(2,0)}")
+    print(f"  seeds: {list(TRAINING_SEEDS)}")
+    print(f"  methods: {list(methods)}")
+    print(f"  variants: {list(variants)}")
+    print(f"  artifact dir: {_ARTIFACT_DIR}")
+
+    if class_counts:
+        cnts = [v for v in class_counts.values() if v > 0]
+        if cnts and (max(cnts) - min(cnts)) > 0.10 * sum(cnts):
+            warnings.warn(
+                f"Class counts deviate >10%: {class_counts}. "
+                "Sample is not perfectly balanced.",
+                UserWarning, stacklevel=2,
+            )
+
+    per_seed_dfs: dict = {}
+    for seed in TRAINING_SEEDS:
+        print(f"\n  ---- seed={seed} ----")
+        try:
+            _generate_per_seed_attributions(
+                seed, samples, methods, variants, _OUT_DIR,
+            )
+        except FileNotFoundError as exc:
+            print(f"  [SKIP seed={seed}] {exc}")
+            continue
+        df_seed = _compute_per_seed_stability(
+            seed, samples, methods, variants, _OUT_DIR,
+        )
+        if df_seed.empty:
+            print(f"  [WARN seed={seed}] No stability rows computed.")
+            continue
+        per_seed_csv = _ARTIFACT_DIR / f"stability_perSample_seed{seed}.csv"
+        df_seed.to_csv(per_seed_csv, index=False, encoding="utf-8")
+        print(f"  [seed={seed}] saved {len(df_seed)} rows -> {per_seed_csv.name}")
+        per_seed_dfs[seed] = df_seed
+
+    if not per_seed_dfs:
+        print("  [ERROR] No per-seed stability data computed across any seed.")
+        return None
+
+    per_seed_summaries: dict = {}
+    seed_results_for_agg: list = []
+
+    for seed, df_seed in per_seed_dfs.items():
+        seed_sum_rows = []
+        scalar_metrics: dict = {"seed": seed}
+        for (method, vname), grp in df_seed.groupby(["method", "variant"]):
+            rhos = grp["spearman_rho"].dropna().tolist()
+            j5s  = grp["jaccard_k5"].dropna().tolist()
+            if len(rhos) < 2:
+                continue
+            rho_lo, rho_hi = _scipy_bootstrap_ci(rhos, n_resamples=2000)
+            j5_lo,  j5_hi  = _scipy_bootstrap_ci(j5s,  n_resamples=2000)
+            diffs = [r - 1.0 for r in rhos]
+            try:
+                w_stat, w_p = scipy_wilcoxon(diffs, alternative="less")
+            except ValueError:
+                w_stat = w_p = float("nan")
+            seed_sum_rows.append({
+                "seed": seed, "method": method, "variant": vname, "n": len(rhos),
+                "mean_rho": round(float(np.mean(rhos)), 4),
+                "std_rho":  round(float(np.std(rhos)), 4),
+                "ci95_lo_rho": round(rho_lo, 4),
+                "ci95_hi_rho": round(rho_hi, 4),
+                "mean_j5":     round(float(np.mean(j5s)), 4),
+                "ci95_lo_j5":  round(j5_lo, 4),
+                "ci95_hi_j5":  round(j5_hi, 4),
+                "wilcoxon_stat": round(float(w_stat), 4),
+                "wilcoxon_p":    round(float(w_p), 6),
+            })
+            scalar_metrics[f"{method}__{vname}__mean_rho"] = float(np.mean(rhos))
+            scalar_metrics[f"{method}__{vname}__mean_j5"]  = float(np.mean(j5s))
+
+        df_sum = pd.DataFrame(seed_sum_rows)
+        if not df_sum.empty:
+            n_comp = len(df_sum)
+            ps = df_sum["wilcoxon_p"].fillna(1.0).tolist()
+            _, p_bonf, _, _ = multipletests(ps, alpha=0.05, method="bonferroni")
+            df_sum["p_bonferroni"] = [round(float(p), 6) for p in p_bonf]
+            df_sum["significant_bonferroni"] = df_sum["p_bonferroni"] < 0.05
+            df_sum["bonferroni_alpha"] = round(0.05 / max(1, n_comp), 6)
+            sum_csv = _ARTIFACT_DIR / f"stability_summary_seed{seed}.csv"
+            df_sum.to_csv(sum_csv, index=False, encoding="utf-8")
+            print(f"  [seed={seed}] summary ({n_comp} comparisons) -> {sum_csv.name}")
+        per_seed_summaries[seed] = df_sum
+        seed_results_for_agg.append(scalar_metrics)
+
+    aggregated = aggregate_seed_results(seed_results_for_agg) if len(seed_results_for_agg) >= 2 else None
+
+    all_per_sample = pd.concat(per_seed_dfs.values(), ignore_index=True)
+    pooled_path = _ARTIFACT_DIR / "stability_perSample_all_seeds.csv"
+    all_per_sample.to_csv(pooled_path, index=False, encoding="utf-8")
+    print(f"\n  pooled per-sample rows -> {pooled_path.name}  (n={len(all_per_sample)})")
+
+    aggregate_rows = []
+    bonf_n_comparisons = 0
+    for (method, vname), grp in all_per_sample.groupby(["method", "variant"]):
+        per_seed_means = []
+        for seed, df_seed in per_seed_dfs.items():
+            sub = df_seed[(df_seed["method"] == method) & (df_seed["variant"] == vname)]
+            rhos_seed = sub["spearman_rho"].dropna().tolist()
+            if rhos_seed:
+                per_seed_means.append(float(np.mean(rhos_seed)))
+        if len(per_seed_means) < 2:
+            continue
+        bonf_n_comparisons += 1
+        rhos_all = grp["spearman_rho"].dropna().tolist()
+        j5s_all  = grp["jaccard_k5"].dropna().tolist()
+        rho_lo, rho_hi = _scipy_bootstrap_ci(rhos_all, n_resamples=2000)
+        j5_lo,  j5_hi  = _scipy_bootstrap_ci(j5s_all,  n_resamples=2000)
+        try:
+            w_stat, w_p = scipy_wilcoxon([r - 1.0 for r in rhos_all], alternative="less")
+        except ValueError:
+            w_stat = w_p = float("nan")
+        aggregate_rows.append({
+            "method": method, "variant": vname,
+            "n_seeds": len(per_seed_means),
+            "n_samples_total": len(rhos_all),
+            "mean_rho_across_seeds":  round(float(np.mean(per_seed_means)), 4),
+            "std_rho_across_seeds":   round(float(np.std(per_seed_means, ddof=1)) if len(per_seed_means) > 1 else 0.0, 4),
+            "pooled_mean_rho":        round(float(np.mean(rhos_all)), 4),
+            "pooled_ci95_lo_rho":     round(rho_lo, 4),
+            "pooled_ci95_hi_rho":     round(rho_hi, 4),
+            "pooled_mean_j5":         round(float(np.mean(j5s_all)), 4),
+            "pooled_ci95_lo_j5":      round(j5_lo, 4),
+            "pooled_ci95_hi_j5":      round(j5_hi, 4),
+            "wilcoxon_stat": round(float(w_stat), 4),
+            "wilcoxon_p":    round(float(w_p), 6),
+        })
+
+    df_agg = pd.DataFrame(aggregate_rows)
+    if not df_agg.empty:
+        ps = df_agg["wilcoxon_p"].fillna(1.0).tolist()
+        _, p_bonf, _, _ = multipletests(ps, alpha=0.05, method="bonferroni")
+        df_agg["p_bonferroni"] = [round(float(p), 6) for p in p_bonf]
+        df_agg["significant_bonferroni"] = df_agg["p_bonferroni"] < 0.05
+        df_agg["bonferroni_alpha"] = round(0.05 / max(1, bonf_n_comparisons), 6)
+        agg_csv = _ARTIFACT_DIR / "stability_aggregate_acrossSeeds.csv"
+        df_agg.to_csv(agg_csv, index=False, encoding="utf-8")
+        print(f"  aggregate across seeds -> {agg_csv.name}")
+
+    payload = {
+        "_meta": {
+            "n_total_samples_requested": int(n_total),
+            "n_total_samples_used":      int(len(samples)),
+            "min_per_class":             int(min_per_class),
+            "class_counts": {LABELS_NAME(k): v for k, v in class_counts.items()},
+            "seeds":   list(TRAINING_SEEDS),
+            "methods": list(methods),
+            "variants": list(variants),
+            "bonferroni_family_size": int(bonf_n_comparisons),
+            "bonferroni_alpha":       round(0.05 / max(1, bonf_n_comparisons), 6),
+            "bootstrap_n_resamples":  2000,
+        },
+        "per_seed_summary": {
+            int(s): df_sum.to_dict(orient="records")
+            for s, df_sum in per_seed_summaries.items()
+        },
+        "aggregate_across_seeds": df_agg.to_dict(orient="records") if not df_agg.empty else [],
+        "seed_aggregated_metrics": aggregated,
+    }
+    json_path = _ARTIFACT_DIR / "large_sample_stability.json"
+    if aggregated is not None:
+        save_aggregated_results(aggregated, _ARTIFACT_DIR / "seed_aggregated_metrics.json", exclude_raw=False)
+    with open(json_path, "w", encoding="utf-8") as _f:
+        _json.dump(payload, _f, indent=2, default=float)
+    print(f"  payload -> {json_path.name}")
+
+    if not df_agg.empty:
+        print(f"\n  {'method':5s}  {'variant':15s}  {'n_seeds':>7s}  {'n':>5s}  "
+              f"{'rho':>6s} [95% CI]              {'J@5':>5s}  p_bonf  sig?")
+        for _, row in df_agg.sort_values(["method", "variant"]).iterrows():
+            sig = "*" if row["significant_bonferroni"] else " "
+            print(f"  {row['method']:5s}  {row['variant']:15s}  "
+                  f"{int(row['n_seeds']):>7d}  {int(row['n_samples_total']):>5d}  "
+                  f"{row['pooled_mean_rho']:6.3f} "
+                  f"[{row['pooled_ci95_lo_rho']:.3f},{row['pooled_ci95_hi_rho']:.3f}]  "
+                  f"{row['pooled_mean_j5']:5.3f}  {row['p_bonferroni']:.4f}  {sig}")
+
+    return payload
+
+
+def LABELS_NAME(k: int) -> str:
+    return {0: "POSITIVE", 1: "NEUTRAL", 2: "NEGATIVE"}.get(int(k), str(k))
+
+
 def decompose_qat_drift(
     per_sample_csv: Optional[Path] = None,
     out_dir: Optional[Path] = None,

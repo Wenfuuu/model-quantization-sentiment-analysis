@@ -145,6 +145,12 @@ def run_xai():
         print_section("STABILITY ANALYSIS COMPLETED")
         return
 
+    if experiment_key == "large_stability":
+        from src.evaluation.explanation_drift import run_large_sample_cross_seed_stability
+        run_large_sample_cross_seed_stability(n_total=num_samples)
+        print_section("LARGE-SAMPLE CROSS-SEED STABILITY COMPLETED")
+        return
+
     if experiment_key == "faithfulness":
         run_faithfulness_evaluation()
         print_section("FAITHFULNESS EVALUATION COMPLETED")

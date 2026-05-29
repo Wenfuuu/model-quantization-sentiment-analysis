@@ -605,8 +605,9 @@ def interactive_menu():
     print("  [11] Faithfulness Evaluation (Suff+Comp k=5, all 8 variants x LIME/OCC/SHAP)")
     print("  [12] Cross-method Agreement (FP32 ig/gxi/lime/occ/shap Spearman NxN matrix)")
     print("  [13] Probe Attribution Analysis (phenomenon token ranks, Occlusion, 3 variants)")
+    print("  [14] Large-sample cross-seed stability (all seeds, balanced, N from config)")
 
-    method_choice = input("\n  Enter choice (1-13): ").strip()
+    method_choice = input("\n  Enter choice (1-14): ").strip()
 
     if method_choice == "2":
         return _qat_menu()
@@ -643,6 +644,15 @@ def interactive_menu():
 
     if method_choice == "13":
         return "probe_attr", [], 50, None
+
+    if method_choice == "14":
+        from src.config import LARGE_N_STABILITY_SAMPLES
+        n_str = input(
+            f"\n  Large-N sample size (default {LARGE_N_STABILITY_SAMPLES}, "
+            f"enter 10 for a quick smoke test): "
+        ).strip()
+        n_override = int(n_str) if n_str else LARGE_N_STABILITY_SAMPLES
+        return "large_stability", [], n_override, None
 
     print("\n  Select Model:")
     print("  [1] Original IndoBERT (indobenchmark/indobert-base-p2)")
@@ -1339,6 +1349,9 @@ if __name__ == "__main__":
     if experiment_key == "stability":
         from src.evaluation.explanation_drift import run_stability_analysis
         run_stability_analysis()
+    elif experiment_key == "large_stability":
+        from src.evaluation.explanation_drift import run_large_sample_cross_seed_stability
+        run_large_sample_cross_seed_stability(n_total=num_samples)
     else:
         run_xai_experiment(experiment_key, precisions, num_samples, divergence_samples)
 
