@@ -136,7 +136,6 @@ class FakeQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
-            overwrite_output_dir=True,
             learning_rate=self.config.learning_rate,
             per_device_train_batch_size=self.config.batch_size,
             per_device_eval_batch_size=self.config.batch_size,
@@ -227,7 +226,6 @@ class FakeQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
-            overwrite_output_dir=True,
             learning_rate=self.config.learning_rate,
             per_device_train_batch_size=self.config.batch_size,
             per_device_eval_batch_size=self.config.batch_size,
@@ -313,7 +311,6 @@ class FakeQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
-            overwrite_output_dir=True,
             learning_rate=self.config.learning_rate,
             per_device_train_batch_size=self.config.batch_size,
             per_device_eval_batch_size=self.config.batch_size,
@@ -423,7 +420,6 @@ class FakeQATTrainer:
 
         training_args = TrainingArguments(
             output_dir=output_dir,
-            overwrite_output_dir=True,
             learning_rate=self.config.learning_rate,
             per_device_train_batch_size=self.config.batch_size,
             per_device_eval_batch_size=self.config.batch_size,
@@ -553,7 +549,6 @@ class FakeQATTrainer:
 
         eval_args = TrainingArguments(
             output_dir=results_dir,
-            overwrite_output_dir=True,
             per_device_eval_batch_size=self.config.batch_size,
             fp16=False,
             no_cuda=True,
