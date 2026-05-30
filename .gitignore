@@ -68,3 +68,4 @@ finetuned-model/indobert-fp32-smsa-3label-finetuned/
 .hf_cache/
 
 CLAUDE.md
+.docs/
