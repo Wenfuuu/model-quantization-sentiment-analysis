@@ -1291,8 +1291,9 @@ def run_xai_diagnostics():
     print("  [5] QAT drift decomposition (FP32-Control vs QAT-FP32)")
     print("  [6] Render large-sample cross-seed stability table (from stored artifacts)")
     print("  [7] Deployment recommendation (constraint-keyed PTQ vs QAT table)")
+    print("  [8] Render stability-by-family / generalization tables (from stored artifacts)")
 
-    diag_choice = input("\n  Enter choice (1/2/3/4/5/6/7): ").strip()
+    diag_choice = input("\n  Enter choice (1/2/3/4/5/6/7/8): ").strip()
 
     if diag_choice == "5":
         from src.evaluation.explanation_drift import decompose_qat_drift
@@ -1312,6 +1313,12 @@ def run_xai_diagnostics():
         from src.visualization.reports import render_deployment_recommendation
         render_deployment_recommendation()
         print_section("DEPLOYMENT RECOMMENDATION RENDERED")
+        return
+
+    if diag_choice == "8":
+        from src.visualization.reports import render_stability_by_family
+        render_stability_by_family()
+        print_section("STABILITY-BY-FAMILY (GENERALIZATION) RENDERED")
         return
 
     experiment_key, precisions, num_samples, divergence_samples = interactive_menu()
