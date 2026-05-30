@@ -1234,6 +1234,9 @@ def decompose_qat_drift(
                 "total = training_component + fakequant_residual (per sample, then averaged)."
             ),
             "source": str(per_path),
+            "bootstrap_n_resamples": 2000,
+            "bootstrap_method": "percentile",
+            "wilcoxon_alternative": "two-sided",
         },
         "per_method": {r["method"]: {k: v for k, v in r.items() if k != "method"} for r in rows},
     }
@@ -1404,6 +1407,13 @@ def compute_stability_by_family() -> None:
             }
 
     payload = {
+        "_meta": {
+            "bootstrap_n_resamples": 2000,
+            "bootstrap_method": "percentile",
+            "bonferroni_family_size": int(len(raw_ps)),
+            "wilcoxon_alternative": "less",
+            "families": list(_FAMILIES),
+        },
         "gradient_family":    family_results["gradient"],
         "perturbation_family": family_results["perturbation"],
         "aggregate_table3":   agg_table3,
@@ -1441,36 +1451,23 @@ def compute_stability_by_family() -> None:
                 })
         return rows
 
+    family_csv_paths = {}
     for family, fname in (("gradient", "table3a_gradient"),
                           ("perturbation", "table3b_perturbation")):
         csv_path = _RES_DIR / f"{fname}.csv"
         pd.DataFrame(_csv_rows(family)).to_csv(csv_path, index=False, encoding="utf-8")
         print(f"  {fname}.csv -> {csv_path}")
+        family_csv_paths[family] = csv_path
 
     if sum_path.exists():
         agg_path = _RES_DIR / "table3_aggregate_appendix.csv"
         _shutil.copy2(sum_path, agg_path)
         print(f"  table3_aggregate_appendix.csv -> {agg_path}")
 
-    for family in _FAMILIES:
-        _sample = next(
-            (e for e in family_results[family].values() if e.get("methods")), {}
-        )
-        methods_str = ", ".join(_sample.get("methods", ["?"]))
-        print(f"\n  {family.upper()} family (methods: {methods_str})")
-        print(f"  {'variant':22s}  {'rho':>6s}  {'95% CI':^15s}  sig?")
-        for vn in _VARIANTS_ORDER:
-            e     = family_results[family].get(vn, {})
-            vlab  = _VARIANT_DISPLAY.get(vn, vn)
-            lbl   = e.get("label", "")
-            if lbl == "STE_PROXY_INVALID":
-                print(f"  {vlab:22s}  {'N/A':>6s}  {'':15s}  STE")
-            elif e.get("rho") is None:
-                print(f"  {vlab:22s}  {'N/A':>6s}  {'':15s}  {lbl}")
-            else:
-                ci_s = f"[{e['ci_low']:.3f},{e['ci_high']:.3f}]"
-                sig  = "*" if e.get("significant") else " "
-                print(f"  {vlab:22s}  {e['rho']:6.3f}  {ci_s:15s}  {sig}")
+    # Render the two family sub-tables through the central renderer in
+    # src/visualization/reports.py — no hand-written rows here.
+    from src.visualization.reports import render_stability_by_family
+    render_stability_by_family(json_path=json_path, csv_paths=family_csv_paths)
 
 def run_full_stability_stats():
     import pandas as pd

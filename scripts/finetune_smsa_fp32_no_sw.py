@@ -266,11 +266,18 @@ def train_single_seed(
         json.dump(metrics, f, indent=2)
     print(f"Metrics saved -> {metrics_path}")
 
+    _is_control = Path(save_dir).name.startswith("fp32_control")
     results = {
         "model_id": MODEL_ID,
         "save_dir": str(save_dir),
         "seed": seed,
         "hyperparameters": {
+            "backbone":   MODEL_ID,
+            "dataset":    "smsa",
+            "schedule":   "fp32_control" if _is_control else "fp32_baseline",
+            "is_control_schedule": _is_control,
+            "optimizer":  "AdamW",
+            "lr_scheduler": "linear_with_warmup",
             "epochs":     epochs,
             "lr":         lr,
             "batch_size": batch_size,
