@@ -149,7 +149,7 @@ class FakeQATTrainer:
             logging_steps=100,
             report_to="none",
             fp16=False,
-            no_cuda=True,
+            use_cpu=True,
             push_to_hub=False,
         )
 
@@ -239,7 +239,7 @@ class FakeQATTrainer:
             logging_steps=100,
             report_to="none",
             fp16=False,
-            no_cuda=True,
+            use_cpu=True,
             save_safetensors=False,
             push_to_hub=False,
         )
@@ -324,7 +324,7 @@ class FakeQATTrainer:
             logging_steps=100,
             report_to="none",
             fp16=False,
-            no_cuda=True,
+            use_cpu=True,
             push_to_hub=False,
         )
 
@@ -433,7 +433,7 @@ class FakeQATTrainer:
             logging_steps=100,
             report_to="none",
             fp16=False,
-            no_cuda=True,
+            use_cpu=True,
             save_safetensors=False,
             push_to_hub=False,
         )
@@ -551,7 +551,7 @@ class FakeQATTrainer:
             output_dir=results_dir,
             per_device_eval_batch_size=self.config.batch_size,
             fp16=False,
-            no_cuda=True,
+            use_cpu=True,
             report_to="none",
         )
 
