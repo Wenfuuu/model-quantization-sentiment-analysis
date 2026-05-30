@@ -180,7 +180,7 @@ class EagerQATTrainer:
             logging_steps=50,
             report_to="none",
             fp16=False,
-            no_cuda=True,
+            use_cpu=True,
             save_safetensors=False,
             push_to_hub=False,
             save_total_limit=1,
