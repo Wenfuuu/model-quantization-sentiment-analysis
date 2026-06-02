@@ -30,7 +30,14 @@ from sklearn.metrics import (
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.config import DEVICE, MODEL_ID as _CFG_MODEL_ID, MODEL_TAG, DEFAULT_MODEL_TAG, fp32_seed_dir
+from src.config import (
+    DEVICE,
+    MODEL_ID as _CFG_MODEL_ID,
+    MODEL_TAG,
+    DEFAULT_MODEL_TAG,
+    fp32_seed_dir,
+    fp32_control_seed_dir,
+)
 from src.utils import set_seed
 from src.evaluation.calibration import expected_calibration_error
 
@@ -328,9 +335,9 @@ def main(args):
         if args.save_dir and len(seeds) == 1:
             save_dir = Path(args.save_dir)
         elif getattr(args, "control_retrain", False):
-            save_dir = SAVE_BASE / f"fp32_control_seed{seed}"
+            save_dir = fp32_control_seed_dir(seed)
         else:
-            save_dir = SAVE_BASE / f"fp32_seed{seed}"
+            save_dir = fp32_seed_dir(seed)
 
         result = train_single_seed(
             seed, save_dir,
@@ -341,7 +348,7 @@ def main(args):
         all_results.append(result)
 
         if getattr(args, "control_retrain", False):
-            ckpt_path = SAVE_BASE / f"fp32_control_seed{seed}.pt"
+            ckpt_path = fp32_control_seed_dir(seed).with_suffix(".pt")
             _ctrl_model = AutoModelForSequenceClassification.from_pretrained(save_dir)
             torch.save(_ctrl_model.state_dict(), ckpt_path)
             print(f"  Control checkpoint saved -> {ckpt_path}")
