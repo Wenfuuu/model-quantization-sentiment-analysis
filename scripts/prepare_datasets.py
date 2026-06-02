@@ -451,56 +451,90 @@ def build_explainability_subsample() -> None:
         label   = _INT2LABEL[int(row["true_label"])]
         print(f"    [{label}] {snippet}")
 
-_NUSAX_BASE_URL = (
-    "https://raw.githubusercontent.com/IndoNLP/nusax"
-    "/main/datasets/sentiment/indonesian/{split}.csv"
-)
-_NUSAX_VALID_LABELS = {"positive", "neutral", "negative"}
+_NUSAX_HF_DATASET = "indonlp/NusaX-senti"
+_NUSAX_HF_CONFIG  = "ind"
+# HF ClassLabel order for NusaX-senti.label — verified against the live
+# datasets-server features endpoint (2026-06-02). NusaX's native int
+# convention is 0=negative,1=neutral,2=positive, which is REVERSED from
+# the repo's int schema (0=POSITIVE,1=NEUTRAL,2=NEGATIVE). The remap into
+# the repo's schema happens by STRING at load time
+# (src.data.loader.load_nusax_ind_dataset), deliberately bypassing the
+# native int convention to keep the contract explicit and audit-friendly.
+_NUSAX_CLASSLABEL_NAMES = ("negative", "neutral", "positive")
+_NUSAX_VALID_LABELS = set(_NUSAX_CLASSLABEL_NAMES)
 
 
 def prepare_nusax_ind() -> dict[str, pd.DataFrame]:
     """Fetch NusaX-senti (Indonesian) and write to data/processed/nusax_ind_*.csv.
 
-    Labels are kept as the source NusaX *strings* (positive/neutral/negative).
-    The remap into the repo's integer schema (0=POSITIVE,1=NEUTRAL,2=NEGATIVE)
-    happens by STRING at load time (src.data.loader.load_nusax_ind_dataset),
-    deliberately bypassing NusaX's reversed native int convention
-    (NusaX: 0=negative,1=neutral,2=positive).
+    Source: HuggingFace ``indonlp/NusaX-senti`` (config ``ind``). The original
+    IndoNLP/nusax GitHub repo at
+    ``raw.githubusercontent.com/IndoNLP/nusax/main/datasets/sentiment/...``
+    is no longer reachable, so we resolve the dataset through HF instead and
+    decode the ClassLabel int back to its source string at fetch time.
 
+    Labels are written as the source NusaX *strings* (positive/neutral/negative).
     Eval-only — do NOT use these for fine-tuning. NusaX-senti is derived from
     SmSA, so the train/test relationship is contaminated.
     """
     print_divider("Prepare NusaX-senti (Indonesian) — eval-only")
     written: dict[str, pd.DataFrame] = {}
 
-    for split, alias in (("train", "train"), ("valid", "valid"), ("test", "test")):
-        url = _NUSAX_BASE_URL.format(split=split)
-        out_path = _DATA_DIR / f"nusax_ind_{alias}.csv"
+    try:
+        from datasets import load_dataset  # type: ignore
+    except ImportError:
+        print("  ERROR: the `datasets` package is required for NusaX prep.")
+        print("         Install with: pip install datasets")
+        return written
 
-        try:
-            payload = _http_get(url)
-        except Exception as exc:
-            print(f"  [{split.upper()}]  fetch FAILED: {exc}")
+    try:
+        ds = load_dataset(_NUSAX_HF_DATASET, _NUSAX_HF_CONFIG)
+    except Exception as exc:
+        print(f"  fetch FAILED ({_NUSAX_HF_DATASET}/{_NUSAX_HF_CONFIG}): {exc}")
+        print("  WARNING: no NusaX splits written. Network reachable?")
+        return written
+
+    # HF split names -> our on-disk aliases.
+    for hf_split, alias in (("train", "train"),
+                            ("validation", "valid"),
+                            ("test", "test")):
+        if hf_split not in ds:
+            print(f"  [{alias.upper()}]  split {hf_split!r} missing in HF dataset")
             continue
 
-        df = pd.read_csv(io.StringIO(payload))
-        # NusaX schema: columns id, text, label (label is the string).
-        if "label" not in df.columns or "text" not in df.columns:
-            print(f"  [{split.upper()}]  unexpected schema: {list(df.columns)}")
+        split_ds = ds[hf_split]
+        # Feature schema: id (str), text (str), lang (str), label (ClassLabel int).
+        if "text" not in split_ds.column_names or "label" not in split_ds.column_names:
+            print(f"  [{alias.upper()}]  unexpected schema: {split_ds.column_names}")
             continue
 
+        feat = split_ds.features.get("label")
+        # Decode int -> source string via ClassLabel.int2str when possible,
+        # otherwise fall back to the verified name list.
+        if feat is not None and hasattr(feat, "int2str"):
+            label_strs = [str(s).strip().lower() for s in feat.int2str(split_ds["label"])]
+        else:
+            label_strs = [
+                _NUSAX_CLASSLABEL_NAMES[int(i)] if 0 <= int(i) < len(_NUSAX_CLASSLABEL_NAMES) else ""
+                for i in split_ds["label"]
+            ]
+
+        df = pd.DataFrame({
+            "text":  [str(t) for t in split_ds["text"]],
+            "label": label_strs,
+        })
         df = df.dropna(subset=["text", "label"])
-        df["text"]  = df["text"].astype(str).map(preprocess_text)
-        df["label"] = df["label"].astype(str).str.strip().str.lower()
+        df["text"] = df["text"].map(preprocess_text)
         df = df[df["text"] != ""]
         df = df[df["label"].isin(_NUSAX_VALID_LABELS)]
 
         df = df[["text", "label"]].reset_index(drop=True)
+        out_path = _DATA_DIR / f"nusax_ind_{alias}.csv"
         df.to_csv(out_path, index=False, encoding="utf-8")
         written[alias] = df
 
         dist = label_distribution(df["label"])
-        print(f"\n  [{split.upper()}]  rows={len(df):,}  -> {out_path.name}")
+        print(f"\n  [{alias.upper()}]  rows={len(df):,}  -> {out_path.name}")
         for cls, info in dist.items():
             print(f"    {cls:10s}: {info['count']:5d}  ({info['pct']})")
 
