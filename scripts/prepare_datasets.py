@@ -453,83 +453,67 @@ def build_explainability_subsample() -> None:
 
 _NUSAX_HF_DATASET = "indonlp/NusaX-senti"
 _NUSAX_HF_CONFIG  = "ind"
-# HF ClassLabel order for NusaX-senti.label — verified against the live
-# datasets-server features endpoint (2026-06-02). NusaX's native int
-# convention is 0=negative,1=neutral,2=positive, which is REVERSED from
-# the repo's int schema (0=POSITIVE,1=NEUTRAL,2=NEGATIVE). The remap into
-# the repo's schema happens by STRING at load time
-# (src.data.loader.load_nusax_ind_dataset), deliberately bypassing the
-# native int convention to keep the contract explicit and audit-friendly.
 _NUSAX_CLASSLABEL_NAMES = ("negative", "neutral", "positive")
 _NUSAX_VALID_LABELS = set(_NUSAX_CLASSLABEL_NAMES)
 
 
 def prepare_nusax_ind() -> dict[str, pd.DataFrame]:
-    """Fetch NusaX-senti (Indonesian) and write to data/processed/nusax_ind_*.csv.
-
-    Source: HuggingFace ``indonlp/NusaX-senti`` (config ``ind``). The original
-    IndoNLP/nusax GitHub repo at
-    ``raw.githubusercontent.com/IndoNLP/nusax/main/datasets/sentiment/...``
-    is no longer reachable, so we resolve the dataset through HF instead and
-    decode the ClassLabel int back to its source string at fetch time.
-
-    Labels are written as the source NusaX *strings* (positive/neutral/negative).
-    Eval-only — do NOT use these for fine-tuning. NusaX-senti is derived from
-    SmSA, so the train/test relationship is contaminated.
-    """
     print_divider("Prepare NusaX-senti (Indonesian) — eval-only")
     written: dict[str, pd.DataFrame] = {}
 
+    parquet_tpl = (
+        "https://huggingface.co/datasets/{ds}"
+        "/resolve/refs%2Fconvert%2Fparquet/{cfg}/{hf_split}/0000.parquet"
+    )
+    splits = (("train", "train"), ("validation", "valid"), ("test", "test"))
+
     try:
-        from datasets import load_dataset  # type: ignore
+        import pyarrow.parquet as pq
     except ImportError:
-        print("  ERROR: the `datasets` package is required for NusaX prep.")
-        print("         Install with: pip install datasets")
+        print("  ERROR: `pyarrow` is required to read NusaX parquet splits.")
+        print("         Install with: pip install pyarrow")
         return written
 
-    try:
-        ds = load_dataset(_NUSAX_HF_DATASET, _NUSAX_HF_CONFIG)
-    except Exception as exc:
-        print(f"  fetch FAILED ({_NUSAX_HF_DATASET}/{_NUSAX_HF_CONFIG}): {exc}")
-        print("  WARNING: no NusaX splits written. Network reachable?")
-        return written
+    for hf_split, alias in splits:
+        url = parquet_tpl.format(
+            ds=_NUSAX_HF_DATASET,
+            cfg=_NUSAX_HF_CONFIG,
+            hf_split=hf_split,
+        )
+        out_path = _DATA_DIR / f"nusax_ind_{alias}.csv"
 
-    # HF split names -> our on-disk aliases.
-    for hf_split, alias in (("train", "train"),
-                            ("validation", "valid"),
-                            ("test", "test")):
-        if hf_split not in ds:
-            print(f"  [{alias.upper()}]  split {hf_split!r} missing in HF dataset")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "python-urllib/3"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                blob = resp.read()
+        except Exception as exc:
+            print(f"  [{alias.upper()}]  fetch FAILED: {exc}")
             continue
 
-        split_ds = ds[hf_split]
-        # Feature schema: id (str), text (str), lang (str), label (ClassLabel int).
-        if "text" not in split_ds.column_names or "label" not in split_ds.column_names:
-            print(f"  [{alias.upper()}]  unexpected schema: {split_ds.column_names}")
+        try:
+            df = pq.read_table(io.BytesIO(blob)).to_pandas()
+        except Exception as exc:
+            print(f"  [{alias.upper()}]  parquet read FAILED: {exc}")
             continue
 
-        feat = split_ds.features.get("label")
-        # Decode int -> source string via ClassLabel.int2str when possible,
-        # otherwise fall back to the verified name list.
-        if feat is not None and hasattr(feat, "int2str"):
-            label_strs = [str(s).strip().lower() for s in feat.int2str(split_ds["label"])]
+        if "text" not in df.columns or "label" not in df.columns:
+            print(f"  [{alias.upper()}]  unexpected schema: {list(df.columns)}")
+            continue
+
+        if pd.api.types.is_integer_dtype(df["label"]):
+            df["label"] = df["label"].map(
+                lambda i: _NUSAX_CLASSLABEL_NAMES[int(i)]
+                if 0 <= int(i) < len(_NUSAX_CLASSLABEL_NAMES) else ""
+            )
         else:
-            label_strs = [
-                _NUSAX_CLASSLABEL_NAMES[int(i)] if 0 <= int(i) < len(_NUSAX_CLASSLABEL_NAMES) else ""
-                for i in split_ds["label"]
-            ]
+            df["label"] = df["label"].astype(str).str.strip().str.lower()
 
-        df = pd.DataFrame({
-            "text":  [str(t) for t in split_ds["text"]],
-            "label": label_strs,
-        })
         df = df.dropna(subset=["text", "label"])
-        df["text"] = df["text"].map(preprocess_text)
+        df["text"] = df["text"].astype(str).map(preprocess_text)
         df = df[df["text"] != ""]
         df = df[df["label"].isin(_NUSAX_VALID_LABELS)]
 
         df = df[["text", "label"]].reset_index(drop=True)
-        out_path = _DATA_DIR / f"nusax_ind_{alias}.csv"
         df.to_csv(out_path, index=False, encoding="utf-8")
         written[alias] = df
 
