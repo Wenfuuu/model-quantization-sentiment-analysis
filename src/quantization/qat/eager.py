@@ -1007,6 +1007,13 @@ def qat_onnx_single_seed(
             f"Clean QAT checkpoint not found: {qat_clean_dir}\n"
             "Run multi-seed QAT first."
         )
+    _weight_files = ["model.safetensors", "pytorch_model.bin"]
+    if not any((qat_clean_dir / f).exists() for f in _weight_files):
+        raise FileNotFoundError(
+            f"Clean QAT checkpoint at {qat_clean_dir} exists but contains no model weights "
+            f"({' / '.join(_weight_files)}).\n"
+            "The previous QAT training run likely crashed before saving — re-run multi-seed QAT first."
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(qat_clean_dir)
 
