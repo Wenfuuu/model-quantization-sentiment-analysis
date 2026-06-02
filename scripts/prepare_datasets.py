@@ -451,9 +451,81 @@ def build_explainability_subsample() -> None:
         label   = _INT2LABEL[int(row["true_label"])]
         print(f"    [{label}] {snippet}")
 
+_NUSAX_BASE_URL = (
+    "https://raw.githubusercontent.com/IndoNLP/nusax"
+    "/main/datasets/sentiment/indonesian/{split}.csv"
+)
+_NUSAX_VALID_LABELS = {"positive", "neutral", "negative"}
+
+
+def prepare_nusax_ind() -> dict[str, pd.DataFrame]:
+    """Fetch NusaX-senti (Indonesian) and write to data/processed/nusax_ind_*.csv.
+
+    Labels are kept as the source NusaX *strings* (positive/neutral/negative).
+    The remap into the repo's integer schema (0=POSITIVE,1=NEUTRAL,2=NEGATIVE)
+    happens by STRING at load time (src.data.loader.load_nusax_ind_dataset),
+    deliberately bypassing NusaX's reversed native int convention
+    (NusaX: 0=negative,1=neutral,2=positive).
+
+    Eval-only — do NOT use these for fine-tuning. NusaX-senti is derived from
+    SmSA, so the train/test relationship is contaminated.
+    """
+    print_divider("Prepare NusaX-senti (Indonesian) — eval-only")
+    written: dict[str, pd.DataFrame] = {}
+
+    for split, alias in (("train", "train"), ("valid", "valid"), ("test", "test")):
+        url = _NUSAX_BASE_URL.format(split=split)
+        out_path = _DATA_DIR / f"nusax_ind_{alias}.csv"
+
+        try:
+            payload = _http_get(url)
+        except Exception as exc:
+            print(f"  [{split.upper()}]  fetch FAILED: {exc}")
+            continue
+
+        df = pd.read_csv(io.StringIO(payload))
+        # NusaX schema: columns id, text, label (label is the string).
+        if "label" not in df.columns or "text" not in df.columns:
+            print(f"  [{split.upper()}]  unexpected schema: {list(df.columns)}")
+            continue
+
+        df = df.dropna(subset=["text", "label"])
+        df["text"]  = df["text"].astype(str).map(preprocess_text)
+        df["label"] = df["label"].astype(str).str.strip().str.lower()
+        df = df[df["text"] != ""]
+        df = df[df["label"].isin(_NUSAX_VALID_LABELS)]
+
+        df = df[["text", "label"]].reset_index(drop=True)
+        df.to_csv(out_path, index=False, encoding="utf-8")
+        written[alias] = df
+
+        dist = label_distribution(df["label"])
+        print(f"\n  [{split.upper()}]  rows={len(df):,}  -> {out_path.name}")
+        for cls, info in dist.items():
+            print(f"    {cls:10s}: {info['count']:5d}  ({info['pct']})")
+
+    if not written:
+        print("\n  WARNING: no NusaX splits written. Network reachable?")
+    return written
+
+
 def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="Dataset preparation pipeline")
+    ap.add_argument("--include-nusax", action="store_true",
+                    help="Also prepare NusaX-senti (Indonesian) eval split")
+    ap.add_argument("--only-nusax", action="store_true",
+                    help="Skip SmSA/CASA/HOASA prep; only prepare NusaX")
+    args = ap.parse_args()
+
     print_divider("Dataset Preparation Pipeline")
     print(f"  Output directory: {_DATA_DIR}")
+
+    if args.only_nusax:
+        prepare_nusax_ind()
+        print_divider("DONE (NusaX-only)")
+        print(f"  Outputs written to: {_DATA_DIR}")
+        return
 
     smsa_dfs = task_a()
     casa     = task_b()
@@ -466,6 +538,9 @@ def main() -> None:
     )
 
     build_explainability_subsample()
+
+    if args.include_nusax:
+        prepare_nusax_ind()
 
     print_divider("DONE")
     print(f"  Outputs written to: {_DATA_DIR}")

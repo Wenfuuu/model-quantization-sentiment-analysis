@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import EXPERIMENT_CONFIGS, LABELS, DEVICE, TRAINING_SEEDS, SEEDED_MODEL_DIRS
 from scipy.stats import binom as _binom
-from src.data import load_smsa_dataset, load_tweets_dataset
+from src.data import load_smsa_dataset, load_tweets_dataset, select_eval_samples
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
 from src.models.base import BaseModel
@@ -261,10 +261,7 @@ def run_stress_test_experiment(version_key, tests=None):
 
     models, use_fp16_map = _build_models(base_model)
 
-    if config["dataset"] == "smsa":
-        test_samples = load_smsa_dataset()
-    else:
-        test_samples = load_tweets_dataset()
+    test_samples = select_eval_samples(config)
     print(f"Test samples: {len(test_samples)}")
 
     all_predictions = None

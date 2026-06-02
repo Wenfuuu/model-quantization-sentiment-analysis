@@ -72,7 +72,8 @@ if "--generate-ece" in sys.argv:
         print("=" * 58)
     sys.exit(0)
 
-from src.config import BASE_DIR, DATASET_PATHS, TRAINING_SEEDS
+from src.config import BASE_DIR, DATASET_PATHS, TRAINING_SEEDS, MODEL_ID, MODEL_TAG, DEFAULT_MODEL_TAG
+from src.data import prompt_eval_dataset
 from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
 from src.quantization.qat.trainer import train_qat_seed
@@ -92,11 +93,12 @@ _MODELS_DIR = BASE_DIR / "models"
 def get_default_config(method, quant_type, sample_frac=1.0):
     output_dir = BASE_DIR / "outputs"
 
-    save_name = f"indobert-qat-{quant_type}-smsa"
-    results_name = f"indobert-qat-{quant_type}-smsa"
+    _tag_pfx = "" if MODEL_TAG == DEFAULT_MODEL_TAG else f"{MODEL_TAG}-"
+    save_name = f"{_tag_pfx}indobert-qat-{quant_type}-smsa"
+    results_name = save_name
 
     return FinetuneQATConfig(
-        model_id="indobenchmark/indobert-base-p2",
+        model_id=MODEL_ID,
         train_file=DATASET_PATHS["smsa_train"],
         valid_file=DATASET_PATHS["smsa_valid"],
         test_file=DATASET_PATHS["smsa"],
@@ -597,6 +599,13 @@ def interactive_menu():
     print("  [5] Continued FP32 fine-tune control (no fake-quant)")
 
     pipeline_choice = input("\n  Enter choice (1/2/3/4/5): ").strip()
+
+    eval_ds = prompt_eval_dataset()
+    if eval_ds != "smsa":
+        import os as _os
+        _os.environ["EVAL_DATASET"] = eval_ds
+        print(f"  [eval dataset] using {eval_ds} for QAT evaluation"
+              " (training is always SmSA-only)")
 
     if pipeline_choice == "2":
         return "multiseed", None, None, None, None, None

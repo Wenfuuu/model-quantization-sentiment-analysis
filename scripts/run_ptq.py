@@ -9,7 +9,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import EXPERIMENT_CONFIGS, LABELS, BASE_DIR, TRAINING_SEEDS
-from src.data import load_smsa_dataset, load_tweets_dataset
+from src.data import load_smsa_dataset, load_tweets_dataset, select_eval_samples, prompt_eval_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
 from src.quantization.ptq.multiseed import ptq_single_seed
@@ -63,10 +63,7 @@ def run_ptq_experiment(version_key, num_runs_override=None):
     print(f"\nTotal Parameters: {total_params:,}")
     print(f"Trainable Parameters: {trainable_params:,}")
     
-    if config["dataset"] == "smsa":
-        test_samples = load_smsa_dataset()
-    else:
-        test_samples = load_tweets_dataset()
+    test_samples = select_eval_samples(config)
     
     print(f"\nPrepared {len(test_samples)} test samples")
     
@@ -427,6 +424,12 @@ def interactive_menu():
     print("  [2] Multi-Seed PTQ (FP32 seeds → FP16/INT8/INT4)")
 
     pipeline_choice = input("\n  Enter choice (1/2): ").strip()
+
+    eval_ds = prompt_eval_dataset()
+    if eval_ds != "smsa":
+        import os as _os
+        _os.environ["EVAL_DATASET"] = eval_ds
+        print(f"  [eval dataset] using {eval_ds} for evaluation")
 
     if pipeline_choice == "2":
         return "multiseed", None
