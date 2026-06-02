@@ -30,7 +30,7 @@ from sklearn.metrics import (
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.config import DEVICE
+from src.config import DEVICE, MODEL_ID as _CFG_MODEL_ID, MODEL_TAG, DEFAULT_MODEL_TAG, fp32_seed_dir
 from src.utils import set_seed
 from src.evaluation.calibration import expected_calibration_error
 
@@ -42,7 +42,7 @@ warnings.filterwarnings("ignore")
 BASE_DIR   = Path(__file__).parent.parent
 DATA_DIR   = BASE_DIR / "data" / "processed"
 SAVE_BASE  = BASE_DIR / "models"
-MODEL_ID   = "indobenchmark/indobert-base-p2"
+MODEL_ID   = _CFG_MODEL_ID
 MAX_LENGTH = 128
 SEEDS      = [42, 123, 456]
 

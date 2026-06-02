@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import EXPERIMENT_CONFIGS, QAT_EXPERIMENT_CONFIGS, LABELS, DEVICE
-from src.data import load_smsa_dataset, load_tweets_dataset
+from src.data import load_smsa_dataset, load_tweets_dataset, select_eval_samples, prompt_eval_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
 from src.models.base import BaseModel
@@ -102,10 +102,7 @@ def _resolve_config(version_key):
 def _resolve_samples(config, num_samples, divergence_samples):
     if divergence_samples:
         return divergence_samples
-    if config["dataset"] == "smsa":
-        all_samples = load_smsa_dataset()
-    else:
-        all_samples = load_tweets_dataset()
+    all_samples = select_eval_samples(config)
     return select_samples(all_samples, num_samples)
 
 def _save_json(payload, path):
@@ -173,10 +170,7 @@ def generate_qat_divergences(experiment_key):
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if config["dataset"] == "smsa":
-        test_samples = load_smsa_dataset()
-    else:
-        test_samples = load_tweets_dataset()
+    test_samples = select_eval_samples(config)
 
     onnx_paths = {}
     for precision, model_path in config["model_paths"].items():
@@ -609,6 +603,12 @@ def interactive_menu():
 
     method_choice = input("\n  Enter choice (1-14): ").strip()
 
+    eval_ds = prompt_eval_dataset()
+    if eval_ds != "smsa":
+        import os as _os
+        _os.environ["EVAL_DATASET"] = eval_ds
+        print(f"  [eval dataset] using {eval_ds} for XAI evaluation")
+
     if method_choice == "2":
         return _qat_menu()
 
@@ -903,10 +903,7 @@ def run_xai_experiment(version_key, precisions, num_samples, divergence_samples=
         samples = divergence_samples
         print(f"Mode: Divergence analysis ({len(samples)} divergent samples)")
     else:
-        if config["dataset"] == "smsa":
-            all_samples = load_smsa_dataset()
-        else:
-            all_samples = load_tweets_dataset()
+        all_samples = select_eval_samples(config)
         samples = select_samples(all_samples, num_samples)
         print(f"Mode: Auto-select ({num_samples} samples)")
 

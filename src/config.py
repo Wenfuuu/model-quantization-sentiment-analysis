@@ -1,3 +1,4 @@
+import os
 import torch
 from pathlib import Path
 
@@ -16,14 +17,39 @@ TRAINING_SEEDS = [42, 123, 456]
 LARGE_N_STABILITY_SAMPLES = 300
 LARGE_N_STABILITY_MIN_PER_CLASS = 100
 
+MODEL_REGISTRY = {
+    "indobert":    "indobenchmark/indobert-base-p2",
+    "xlm-roberta": "FacebookAI/xlm-roberta-base",
+    "mbert":       "google-bert/bert-base-multilingual-cased",
+}
+DEFAULT_MODEL_TAG = "indobert"
+MODEL_TAG = os.environ.get("MODEL_TAG", DEFAULT_MODEL_TAG).strip().lower()
+if MODEL_TAG not in MODEL_REGISTRY:
+    raise ValueError(
+        f"MODEL_TAG={MODEL_TAG!r} not in MODEL_REGISTRY "
+        f"(keys: {sorted(MODEL_REGISTRY)})"
+    )
+MODEL_ID = MODEL_REGISTRY[MODEL_TAG]
+
+
+def _tag_suffix(tag: str = MODEL_TAG) -> str:
+    return "" if tag == DEFAULT_MODEL_TAG else f"_{tag}"
+
+
+def fp32_seed_dir(seed: int, tag: str = MODEL_TAG) -> Path:
+    return BASE_DIR / "models" / f"fp32_seed{seed}{_tag_suffix(tag)}"
+
+
+def fp32_control_seed_dir(seed: int, tag: str = MODEL_TAG) -> Path:
+    return BASE_DIR / "models" / f"fp32_control_seed{seed}{_tag_suffix(tag)}"
+
+
 SEEDED_MODEL_DIRS = {
-    seed: BASE_DIR / "models" / f"fp32_seed{seed}"
-    for seed in TRAINING_SEEDS
+    seed: fp32_seed_dir(seed) for seed in TRAINING_SEEDS
 }
 
 SEEDED_CONTROL_MODEL_DIRS = {
-    seed: BASE_DIR / "models" / f"fp32_control_seed{seed}"
-    for seed in TRAINING_SEEDS
+    seed: fp32_control_seed_dir(seed) for seed in TRAINING_SEEDS
 }
 
 LEGACY_MODEL_DIR = BASE_DIR / "finetuned-model" / "indobert-fp32-smsa-3label-finetuned"
@@ -33,25 +59,27 @@ FP32_MODEL_DIR = LEGACY_MODEL_DIR
 PTQ_MODEL_PATH = BASE_DIR / "outputs" / "finetuned-smsa" / "ptq_int8.pth"
 QAT_MODEL_PATH = BASE_DIR / "outputs" / "indobert-qat-int8-smsa" / "qat_trained.pt"
 
+_TAG_OUT_SUFFIX = _tag_suffix()
+
 EXPERIMENT_CONFIGS = {
     "original_smsa": {
-        "model_id": "indobenchmark/indobert-base-p2",
+        "model_id": MODEL_ID,
         "dataset": "smsa",
-        "output_dir": BASE_DIR / "outputs" / "original-smsa",
+        "output_dir": BASE_DIR / "outputs" / f"original-smsa{_TAG_OUT_SUFFIX}",
         "num_inference_runs": 20,
         "warmup_runs": 5,
     },
     "finetuned_smsa": {
-        "model_id": str(BASE_DIR / "models" / "fp32_seed42"),
+        "model_id": str(fp32_seed_dir(42)),
         "dataset": "smsa",
-        "output_dir": BASE_DIR / "outputs" / "finetuned-smsa",
+        "output_dir": BASE_DIR / "outputs" / f"finetuned-smsa{_TAG_OUT_SUFFIX}",
         "num_inference_runs": 20,
         "warmup_runs": 5,
     },
     "fp32_control_smsa": {
-        "model_id": str(BASE_DIR / "models" / "fp32_control_seed42"),
+        "model_id": str(fp32_control_seed_dir(42)),
         "dataset": "smsa",
-        "output_dir": BASE_DIR / "outputs" / "fp32-control-smsa",
+        "output_dir": BASE_DIR / "outputs" / f"fp32-control-smsa{_TAG_OUT_SUFFIX}",
         "num_inference_runs": 20,
         "warmup_runs": 5,
     },
@@ -89,7 +117,22 @@ DATASET_PATHS = {
     "smsa_train": BASE_DIR / "datasets" / "train.tsv",
     "smsa_valid": BASE_DIR / "datasets" / "valid.tsv",
     "tweets": BASE_DIR / "datasets" / "INA_TweetsPPKM_Labeled_Pure.csv",
+    "nusax_ind_train": BASE_DIR / "data" / "processed" / "nusax_ind_train.csv",
+    "nusax_ind_valid": BASE_DIR / "data" / "processed" / "nusax_ind_valid.csv",
+    "nusax_ind_test":  BASE_DIR / "data" / "processed" / "nusax_ind_test.csv",
 }
+
+NUSAX_SOURCE_LABEL_REMAP = {
+    "positive": "POSITIVE",
+    "neutral":  "NEUTRAL",
+    "negative": "NEGATIVE",
+}
+NUSAX_CONTAMINATION_NOTE = (
+    "NusaX-senti 'ind' is derived from SmSA; reuse as an out-of-distribution "
+    "set is contaminated. Treat NusaX numbers as the in-language ceiling, not "
+    "as held-out generalisation."
+)
+EVAL_DATASETS = ("smsa", "nusax_ind")
 
 DEPLOYMENT_STABILITY_RHO_ACCEPTABLE = 0.90
 DEPLOYMENT_AGREEMENT_MIN = 0.97
