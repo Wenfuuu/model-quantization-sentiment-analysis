@@ -526,7 +526,7 @@ def train_qat_seed(
                     "embedding handling) WITHOUT fake-quant observers."
                 ),
             }, f, indent=2)
-        clean_model = clean_model.to(device)
+    clean_model = clean_model.to(device).eval()
     print(f"\nEvaluating clean model on SmSA test ...")
 
     true_labels, pred_labels, probs = _collect_predictions(clean_model, test_loader, device)
