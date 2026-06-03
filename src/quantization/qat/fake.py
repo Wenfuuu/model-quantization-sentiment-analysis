@@ -26,6 +26,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .config import FinetuneQATConfig
+from src.models import get_backbone_embeddings
 from src.utils import set_seed
 
 class FakeQATTrainer:
@@ -215,9 +216,8 @@ class FakeQATTrainer:
         model.train()
         model.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
 
-        if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
-            model.bert.embeddings.qconfig = None
-            print("Embedding layer excluded from quantization")
+        get_backbone_embeddings(model).qconfig = None
+        print("Embedding layer excluded from quantization")
 
         quantization.prepare_qat(model, inplace=True)
         print("Model prepared for QAT (fake INT8 quantization)")
@@ -408,9 +408,8 @@ class FakeQATTrainer:
 
         model.qconfig = int4_qconfig
 
-        if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
-            model.bert.embeddings.qconfig = None
-            print("Embedding layer excluded from quantization")
+        get_backbone_embeddings(model).qconfig = None
+        print("Embedding layer excluded from quantization")
 
         quantization.prepare_qat(model, inplace=True)
         print("Model prepared for QAT (4-bit symmetric weight fake quantization)")

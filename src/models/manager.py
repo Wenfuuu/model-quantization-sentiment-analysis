@@ -6,6 +6,13 @@ from src.config import LABELS, DEVICE
 from .base import BaseModel
 
 
+def get_backbone_embeddings(model):
+    base = getattr(model, "bert", None) or getattr(model, "roberta", None)
+    if base is None:
+        base = getattr(model, "base_model", model)
+    return base.embeddings
+
+
 class ModelManager:
     @staticmethod
     def _is_local_model_dir(model_id):
