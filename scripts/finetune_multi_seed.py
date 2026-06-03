@@ -10,6 +10,7 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
+from src.config import fp32_seed_dir, fp32_control_seed_dir
 from src.utils.seed_aggregation import (
     aggregate_seed_results,
     load_seed_results,
@@ -20,14 +21,14 @@ DEFAULT_SEEDS = [42, 123, 456]
 
 _FINETUNE_SCRIPT = Path(__file__).parent / "finetune_smsa_fp32_no_sw.py"
 
-_CKPT_TEMPLATE = "fp32_seed{seed}"
-
 _AGG_OUTPUT_DIR  = _PROJECT_ROOT / "outputs" / "multi-seed"
 _AGG_OUTPUT_FILE = _AGG_OUTPUT_DIR / "aggregated_finetune_results.json"
 
 
 def seed_checkpoint_dir(seed: int, ckpt_suffix: str = "") -> Path:
-    return _PROJECT_ROOT / "models" / _CKPT_TEMPLATE.format(seed=seed)
+    if ckpt_suffix == "control":
+        return fp32_control_seed_dir(seed)
+    return fp32_seed_dir(seed)
 
 
 def run_single_seed(
