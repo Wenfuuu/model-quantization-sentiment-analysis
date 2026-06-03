@@ -9,6 +9,7 @@ from scipy.stats import spearmanr
 from torch.nn.functional import softmax, cosine_similarity as torch_cosine
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from pathlib import Path
+from src.models import get_backbone_embeddings
 from src.xai.integrated_gradients import IntegratedGradientsExplainer
 from src.xai.alignment import build_alignment, project_subword_to_word
 
@@ -40,7 +41,7 @@ def integrated_gradients_tokens(
 
     target_class = target if target is not None else pred_class
 
-    emb_layer = model.bert.embeddings.word_embeddings
+    emb_layer = get_backbone_embeddings(model).word_embeddings
 
     def forward_fn(input_ids_: torch.Tensor):
         outputs = model(input_ids=input_ids_, attention_mask=attention_mask)
@@ -63,7 +64,7 @@ def integrated_gradients_tokens(
             "Returning zero attributions.",
             RuntimeWarning,
         )
-        attributions = torch.zeros_like(model.bert.embeddings.word_embeddings(input_ids))
+        attributions = torch.zeros_like(get_backbone_embeddings(model).word_embeddings(input_ids))
 
     token_attrs = attributions.mean(dim=-1).squeeze().detach().cpu().numpy()
     tokens = tokenizer.convert_ids_to_tokens(input_ids[0].cpu())
@@ -86,7 +87,7 @@ def gradient_times_input_tokens(
 
     target_class = target if target is not None else pred_class
 
-    embeddings = model.bert.embeddings.word_embeddings(input_ids).detach().requires_grad_(True)
+    embeddings = get_backbone_embeddings(model).word_embeddings(input_ids).detach().requires_grad_(True)
 
     logits = model(inputs_embeds=embeddings, attention_mask=attention_mask).logits
 

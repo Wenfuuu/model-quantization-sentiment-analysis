@@ -3,6 +3,8 @@ import torch
 import numpy as np
 from captum.attr import LayerIntegratedGradients
 
+from src.models import get_backbone_embeddings
+
 IG_SUPPORTED_PRECISIONS = frozenset({"fp32", "fp16", "qat_fp32", "qat_int8", "qat_ste"})
 
 class IntegratedGradientsExplainer:
@@ -31,7 +33,7 @@ class IntegratedGradientsExplainer:
 
         target_class = predicted if target is None else target
 
-        emb_layer = self.model.bert.embeddings.word_embeddings
+        emb_layer = get_backbone_embeddings(self.model).word_embeddings
 
         def forward_fn(input_ids_):
             return self.model(input_ids=input_ids_, attention_mask=attention_mask).logits

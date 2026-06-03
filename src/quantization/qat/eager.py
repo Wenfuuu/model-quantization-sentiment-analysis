@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .config import FinetuneQATConfig
+from src.models import get_backbone_embeddings
 from src.utils import set_seed
 from src.evaluation.calibration import expected_calibration_error
 
@@ -142,9 +143,8 @@ class EagerQATTrainer:
             weight=torch.quantization.default_weight_fake_quant,
         )
 
-        if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
-            model.bert.embeddings.qconfig = None
-            print("Embedding layer excluded from quantization")
+        get_backbone_embeddings(model).qconfig = None
+        print("Embedding layer excluded from quantization")
 
         model_qat = quantization.prepare_qat(model, inplace=False)
         print("Model prepared for QAT (fake quantization)")

@@ -127,6 +127,7 @@ from transformers import AutoTokenizer
 
 from src.config import DEVICE as _DEVICE
 from src.evaluation.calibration import expected_calibration_error
+from src.models import get_backbone_embeddings
 
 def _ece(confs, corr):
     return expected_calibration_error(confs, corr, n_bins=10)["ece"]
@@ -173,9 +174,8 @@ def apply_qat_config(model) -> None:
         activation=tq.default_fake_quant,
         weight=tq.default_weight_fake_quant,
     )
-    if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
-        model.bert.embeddings.qconfig = None
-        print("  [qat] Embedding layer excluded from quantization")
+    get_backbone_embeddings(model).qconfig = None
+    print("  [qat] Embedding layer excluded from quantization")
     tq.prepare_qat(model, inplace=True)
     print("  [qat] Fake-quantization observers attached (INT8-level noise)")
 
@@ -240,9 +240,8 @@ def apply_qat_config_precision(model, precision: str = "int8") -> None:
     cfg = QAT_PRECISION_CONFIGS[precision]
     model.train()
     model.qconfig = cfg["qconfig"]
-    if hasattr(model, "bert") and hasattr(model.bert, "embeddings"):
-        model.bert.embeddings.qconfig = None
-        print(f"  [qat-{precision}] Embedding layer excluded from quantization")
+    get_backbone_embeddings(model).qconfig = None
+    print(f"  [qat-{precision}] Embedding layer excluded from quantization")
     tq.prepare_qat(model, inplace=True)
     print(f"  [qat-{precision}] Fake-quantization observers attached ({cfg['description']})")
 
