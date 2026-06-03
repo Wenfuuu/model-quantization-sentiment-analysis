@@ -532,14 +532,14 @@ def run_faithfulness_evaluation(
     from src.models import ModelManager
     from src.models.base import BaseModel, OnnxBaseModel
     from src.quantization.ptq import PTQQuantizer
-    from src.config import LABELS
+    from src.config import LABELS, fp32_seed_dir, _tag_suffix
 
     _PROJECT_ROOT  = _Path(__file__).resolve().parent.parent.parent
     _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
     _OUT_DIR       = _PROJECT_ROOT / "results" / "attributions"
     _RES_DIR       = _PROJECT_ROOT / "results"
-    _FP32_DIR      = _PROJECT_ROOT / "models" / "fp32_seed42"
-    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / "qat_seed42_clean"
+    _FP32_DIR      = fp32_seed_dir(42)
+    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / f"qat_seed42_clean{_tag_suffix()}"
     _MODELS_DIR    = _PROJECT_ROOT / "models"
 
     if not _SUBSAMPLE_CSV.exists():
@@ -554,7 +554,7 @@ def run_faithfulness_evaluation(
 
     def _load_onnx(variant):
         import onnxruntime as ort
-        onnx_dir  = _MODELS_DIR / f"qat_onnx_{variant}_seed42"
+        onnx_dir  = _MODELS_DIR / f"qat_onnx_{variant}_seed42{_tag_suffix()}"
         onnx_file = onnx_dir / f"model_qat_{variant}.onnx"
         if not onnx_file.exists():
             return None

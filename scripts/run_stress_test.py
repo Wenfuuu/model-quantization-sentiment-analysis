@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import EXPERIMENT_CONFIGS, LABELS, DEVICE, TRAINING_SEEDS, SEEDED_MODEL_DIRS
+from src.config import EXPERIMENT_CONFIGS, LABELS, DEVICE, TRAINING_SEEDS, SEEDED_MODEL_DIRS, _tag_suffix
 from scipy.stats import binom as _binom
 from src.data import load_smsa_dataset, load_tweets_dataset, select_eval_samples
 from src.models import ModelManager
@@ -319,7 +319,7 @@ def run_stress_test_experiment(version_key, tests=None):
             _seed_base = ModelManager.load_model(str(SEEDED_MODEL_DIRS[_seed]), device=torch.device("cpu"))
             _seed_models, _seed_fp16_map = _build_models(_seed_base)
 
-            _qat_clean_dir = Path(__file__).resolve().parent.parent / "models" / f"qat_seed{_seed}_clean"
+            _qat_clean_dir = Path(__file__).resolve().parent.parent / "models" / f"qat_seed{_seed}_clean{_tag_suffix()}"
             if _qat_clean_dir.exists():
                 _qat_model = ModelManager.load_model(str(_qat_clean_dir), device=torch.device("cpu"))
                 _seed_models["qat_fp32"] = _qat_model

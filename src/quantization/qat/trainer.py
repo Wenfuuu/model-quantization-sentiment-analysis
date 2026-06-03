@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForSequenceClassification, get_linear_schedule_with_warmup
 from tqdm import tqdm
 
-from src.config import LABELS, DEVICE
+from src.config import LABELS, DEVICE, fp32_control_seed_dir, _tag_suffix
 from .config import QATConfig
 
 
@@ -374,15 +374,16 @@ def train_qat_seed(
 
     _set_all_seeds(seed)
 
+    _sfx = _tag_suffix()
     if not fake_quant:
-        obs_dir   = models_dir / f"fp32_control_seed{seed}"
-        clean_dir = models_dir / f"fp32_control_seed{seed}"
+        obs_dir   = fp32_control_seed_dir(seed)
+        clean_dir = fp32_control_seed_dir(seed)
     elif qat_precision == "int8":
-        obs_dir   = models_dir / f"qat_seed{seed}_with_observers"
-        clean_dir = models_dir / f"qat_seed{seed}_clean"
+        obs_dir   = models_dir / f"qat_seed{seed}_with_observers{_sfx}"
+        clean_dir = models_dir / f"qat_seed{seed}_clean{_sfx}"
     else:
-        obs_dir   = models_dir / f"qat_{qat_precision}_seed{seed}_with_observers"
-        clean_dir = models_dir / f"qat_{qat_precision}_seed{seed}_clean"
+        obs_dir   = models_dir / f"qat_{qat_precision}_seed{seed}_with_observers{_sfx}"
+        clean_dir = models_dir / f"qat_{qat_precision}_seed{seed}_clean{_sfx}"
     for d in (obs_dir, clean_dir):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -479,7 +480,7 @@ def train_qat_seed(
 
         print(f"Saving clean checkpoint -> {clean_dir}")
         clean_state = strip_observers(best_state_dict)
-        ckpt_path = models_dir / f"qat_{qat_precision}_seed{seed}.pt"
+        ckpt_path = models_dir / f"qat_{qat_precision}_seed{seed}{_sfx}.pt"
         torch.save(clean_state, ckpt_path)
         print(f"  Named checkpoint saved -> {ckpt_path}")
         clean_model = AutoModelForSequenceClassification.from_pretrained(

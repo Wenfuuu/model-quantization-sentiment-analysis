@@ -714,11 +714,13 @@ def _generate_per_seed_attributions(
     fp32_base = ModelManager.load_model(str(fp32_dir))
     fp32_base.model.eval()
 
-    qat_clean_dir = _MODELS_DIR / f"qat_seed{seed}_clean"
+    from src.config import _tag_suffix
+    _sfx = _tag_suffix()
+    qat_clean_dir = _MODELS_DIR / f"qat_seed{seed}_clean{_sfx}"
 
     def _load_onnx(precision):
         import onnxruntime as ort
-        onnx_dir = _MODELS_DIR / f"qat_onnx_{precision}_seed{seed}"
+        onnx_dir = _MODELS_DIR / f"qat_onnx_{precision}_seed{seed}{_sfx}"
         onnx_file = onnx_dir / f"model_qat_{precision}.onnx"
         if not onnx_file.exists():
             return None
@@ -1776,7 +1778,9 @@ def probe_attribution_analysis():
                 .reset_index(drop=True))
     print(f"\n  Probe attribution: {len(selected)} probes × 3 variants")
 
-    fp32_base = ModelManager.load_model(str(_MODELS_DIR / "fp32_seed42"))
+    from src.config import fp32_seed_dir, _tag_suffix
+    _sfx = _tag_suffix()
+    fp32_base = ModelManager.load_model(str(fp32_seed_dir(42)))
     fp32_base.model.eval()
 
     def _build_ptq_int4():
@@ -1785,7 +1789,7 @@ def probe_attribution_analysis():
         return BaseModel(m, fp32_base.tokenizer, device=torch.device("cpu"))
 
     def _load_qat_onnx_int4():
-        onnx_file = _MODELS_DIR / "qat_onnx_int4_seed42" / "model_qat_int4.onnx"
+        onnx_file = _MODELS_DIR / f"qat_onnx_int4_seed42{_sfx}" / "model_qat_int4.onnx"
         if not onnx_file.exists():
             return None
         opts = ort.SessionOptions()

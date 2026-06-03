@@ -412,7 +412,8 @@ _INT2LABEL           = {0: "POSITIVE", 1: "NEUTRAL", 2: "NEGATIVE"}
 def build_explainability_subsample() -> None:
     print_divider("Build Explainability Subsample (v2)")
 
-    pred_path = _MODELS_DIR / "fp32_seed42" / "predictions.csv"
+    from src.config import fp32_seed_dir
+    pred_path = fp32_seed_dir(42) / "predictions.csv"
     if not pred_path.exists():
         print(f"  [SKIP] Predictions not found: {pred_path}")
         print("  Run multi-seed fine-tuning first (step 1).")

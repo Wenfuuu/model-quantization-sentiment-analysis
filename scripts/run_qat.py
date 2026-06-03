@@ -29,15 +29,19 @@ if "--generate-ece" in sys.argv:
 
     _SEEDS = [42, 123, 456]
     _MODELS = _BASE / "models"
+    import os as _os
+    _DEFAULT_TAG = "indobert"
+    _TAG = _os.environ.get("MODEL_TAG", _DEFAULT_TAG).strip().lower()
+    _SFX = "" if _TAG == _DEFAULT_TAG else f"_{_TAG}"
     _VARIANTS = [
-        ("FP32",          lambda s: _MODELS / f"fp32_seed{s}"           / "predictions.csv"),
-        ("PTQ-FP16",      lambda s: _MODELS / f"ptq_fp16_seed{s}"       / "predictions.csv"),
-        ("PTQ-INT8",      lambda s: _MODELS / f"ptq_int8_seed{s}"       / "predictions.csv"),
-        ("PTQ-INT4",      lambda s: _MODELS / f"ptq_int4_seed{s}"       / "predictions.csv"),
-        ("QAT-FP32",      lambda s: _MODELS / f"qat_seed{s}_clean"      / "predictions.csv"),
-        ("QAT-ONNX-FP16", lambda s: _MODELS / f"qat_onnx_fp16_seed{s}"  / "predictions.csv"),
-        ("QAT-ONNX-INT8", lambda s: _MODELS / f"qat_onnx_int8_seed{s}"  / "predictions.csv"),
-        ("QAT-ONNX-INT4", lambda s: _MODELS / f"qat_onnx_int4_seed{s}"  / "predictions.csv"),
+        ("FP32",          lambda s: _MODELS / f"fp32_seed{s}{_SFX}"           / "predictions.csv"),
+        ("PTQ-FP16",      lambda s: _MODELS / f"ptq_fp16_seed{s}{_SFX}"       / "predictions.csv"),
+        ("PTQ-INT8",      lambda s: _MODELS / f"ptq_int8_seed{s}{_SFX}"       / "predictions.csv"),
+        ("PTQ-INT4",      lambda s: _MODELS / f"ptq_int4_seed{s}{_SFX}"       / "predictions.csv"),
+        ("QAT-FP32",      lambda s: _MODELS / f"qat_seed{s}_clean{_SFX}"      / "predictions.csv"),
+        ("QAT-ONNX-FP16", lambda s: _MODELS / f"qat_onnx_fp16_seed{s}{_SFX}"  / "predictions.csv"),
+        ("QAT-ONNX-INT8", lambda s: _MODELS / f"qat_onnx_int8_seed{s}{_SFX}"  / "predictions.csv"),
+        ("QAT-ONNX-INT4", lambda s: _MODELS / f"qat_onnx_int4_seed{s}{_SFX}"  / "predictions.csv"),
     ]
 
     rows = []
@@ -72,7 +76,10 @@ if "--generate-ece" in sys.argv:
         print("=" * 58)
     sys.exit(0)
 
-from src.config import BASE_DIR, DATASET_PATHS, TRAINING_SEEDS, MODEL_ID, MODEL_TAG, DEFAULT_MODEL_TAG
+from src.config import (
+    BASE_DIR, DATASET_PATHS, TRAINING_SEEDS, MODEL_ID, MODEL_TAG, DEFAULT_MODEL_TAG,
+    fp32_seed_dir, fp32_control_seed_dir,
+)
 from src.data import prompt_eval_dataset
 from src.quantization.qat.config import FinetuneQATConfig
 from src.quantization.qat.eager import EagerQATTrainer
@@ -180,7 +187,7 @@ def run_multiseed_qat(
         print(f"#  SEED {i}/{len(seeds)}: {seed}")
         print(f"{'#'*70}")
 
-        fp32_ckpt = _MODELS_DIR / f"fp32_seed{seed}"
+        fp32_ckpt = fp32_seed_dir(seed)
         result = train_qat_seed(
             seed,
             fp32_ckpt=fp32_ckpt,
@@ -309,7 +316,7 @@ def run_multiseed_fp32_control(
         print(f"#  SEED {i}/{len(seeds)}: {seed}")
         print(f"{'#'*70}")
 
-        fp32_ckpt = _MODELS_DIR / f"fp32_seed{seed}"
+        fp32_ckpt = fp32_seed_dir(seed)
         result = train_qat_seed(
             seed,
             fp32_ckpt=fp32_ckpt,
@@ -348,7 +355,7 @@ def run_multiseed_fp32_control(
         agr_str   = f"{agr*100:.2f}%" if agr is not None else "  n/a"
         print(f"  {s:>6d}  {fp32_str:>10}  {ctrl_acc:>10.4f}  {delta_str:>8}  {agr_str:>10}")
 
-    seed_dirs = [_MODELS_DIR / f"fp32_control_seed{s}" for s in seeds]
+    seed_dirs = [fp32_control_seed_dir(s) for s in seeds]
     per_seed_results = load_seed_results(seed_dirs, filename="finetune_results.json")
     agg = aggregate_seed_results(per_seed_results)
 
@@ -388,8 +395,9 @@ def run_multiseed_qat_onnx(seeds: list = None) -> None:
         print(f"#  SEED {i}/{len(seeds)}: {seed}")
         print(f"{'#' * 70}")
 
-        qat_clean = _MODELS_DIR / f"qat_seed{seed}_clean"
-        fp32_ckpt = _MODELS_DIR / f"fp32_seed{seed}"
+        _sfx = "" if MODEL_TAG == DEFAULT_MODEL_TAG else f"_{MODEL_TAG}"
+        qat_clean = _MODELS_DIR / f"qat_seed{seed}_clean{_sfx}"
+        fp32_ckpt = fp32_seed_dir(seed)
         result = qat_onnx_single_seed(
             seed,
             qat_clean_dir=qat_clean,
@@ -456,13 +464,15 @@ def _generate_combined_csv(seeds: list) -> None:
 
     rows = []
 
+    _sfx = "" if MODEL_TAG == DEFAULT_MODEL_TAG else f"_{MODEL_TAG}"
     for seed in seeds:
-        fp32_pred_path = _MODELS_DIR / f"fp32_seed{seed}" / "predictions.csv"
+        fp32_dir = fp32_seed_dir(seed)
+        fp32_pred_path = fp32_dir / "predictions.csv"
         fp32_pred = None
         if fp32_pred_path.exists():
             fp32_pred = pd.read_csv(fp32_pred_path)["pred_label"].astype(int).tolist()
 
-        fp32_metrics = _MODELS_DIR / f"fp32_seed{seed}" / "metrics.json"
+        fp32_metrics = fp32_dir / "metrics.json"
         if fp32_metrics.exists():
             m = json.loads(fp32_metrics.read_text())
             rows.append({
@@ -471,11 +481,11 @@ def _generate_combined_csv(seeds: list) -> None:
                 "smsa_acc": m.get("accuracy"),
                 "smsa_f1": m.get("macro_f1") or m.get("weighted_f1"),
                 "agreement_rate": 1.0,
-                "ece": _ece_from_csv(_MODELS_DIR / f"fp32_seed{seed}" / "predictions.csv"),
+                "ece": _ece_from_csv(fp32_pred_path),
             })
 
         for ptq_v in ["fp16", "int8", "int4"]:
-            d = _MODELS_DIR / f"ptq_{ptq_v}_seed{seed}"
+            d = _MODELS_DIR / f"ptq_{ptq_v}_seed{seed}{_sfx}"
             mp = d / "metrics.json"
             pp = d / "predictions.csv"
             if mp.exists():
@@ -490,7 +500,7 @@ def _generate_combined_csv(seeds: list) -> None:
                     "ece": _ece_from_csv(pp),
                 })
 
-        qat_clean = _MODELS_DIR / f"qat_seed{seed}_clean"
+        qat_clean = _MODELS_DIR / f"qat_seed{seed}_clean{_sfx}"
         mp = qat_clean / "metrics.json"
         pp = qat_clean / "predictions.csv"
         if mp.exists():
@@ -506,7 +516,7 @@ def _generate_combined_csv(seeds: list) -> None:
             })
 
         for ov in ["fp16", "int8", "int4"]:
-            d = _MODELS_DIR / f"qat_onnx_{ov}_seed{seed}"
+            d = _MODELS_DIR / f"qat_onnx_{ov}_seed{seed}{_sfx}"
             mp = d / "metrics.json"
             pp = d / "predictions.csv"
             if mp.exists():

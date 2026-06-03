@@ -12,6 +12,7 @@ import numpy as np
 warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.config import fp32_seed_dir, _tag_suffix
 from src.evaluation.explanation_drift import top_k_jaccard
 
 _ROOT       = Path(__file__).parent.parent
@@ -19,7 +20,7 @@ _OUT_DIR    = _ROOT / "results" / "attributions"
 _RES_DIR    = _ROOT / "results"
 _MODELS_DIR = _ROOT / "models"
 _SUBSAMPLE  = _ROOT / "data" / "explainability_subsample_v2.csv"
-_FP32_DIR   = _MODELS_DIR / "fp32_seed42"
+_FP32_DIR   = fp32_seed_dir(42)
 
 _VARIANTS = [
     "ptq_fp16", "ptq_int8", "ptq_int4",
@@ -154,7 +155,7 @@ def step3_eraser_sweep(
     from src.quantization.ptq import PTQQuantizer
     from src.evaluation.faithfulness import FaithfulnessEvaluator, _OnnxTorchAdapter
 
-    _QAT_CLEAN = _MODELS_DIR / "qat_seed42_clean"
+    _QAT_CLEAN = _MODELS_DIR / f"qat_seed42_clean{_tag_suffix()}"
 
     if not _FP32_DIR.exists():
         print(f"  [ERROR] FP32 model not found at {_FP32_DIR} — skipping ERASER sweep")
@@ -166,7 +167,7 @@ def step3_eraser_sweep(
 
     def _load_onnx(precision: str):
         import onnxruntime as ort
-        onnx_file = _MODELS_DIR / f"qat_onnx_{precision}_seed42" / f"model_qat_{precision}.onnx"
+        onnx_file = _MODELS_DIR / f"qat_onnx_{precision}_seed42{_tag_suffix()}" / f"model_qat_{precision}.onnx"
         if not onnx_file.exists():
             return None
         opts = ort.SessionOptions()
