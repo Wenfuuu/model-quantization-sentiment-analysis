@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .config import FinetuneQATConfig
+from src.config import _tag_suffix
 from src.models import get_backbone_embeddings
 from src.utils import set_seed
 from src.evaluation.calibration import expected_calibration_error
@@ -1017,7 +1018,8 @@ def qat_onnx_single_seed(
 
     tokenizer = AutoTokenizer.from_pretrained(qat_clean_dir)
 
-    base_dir = models_dir / f"qat_onnx_seed{seed}"
+    _sfx = _tag_suffix()
+    base_dir = models_dir / f"qat_onnx_seed{seed}{_sfx}"
     base_dir.mkdir(parents=True, exist_ok=True)
     fp32_onnx = export_model_to_onnx(
         qat_clean_dir, base_dir / "model_qat.onnx", max_length=max_length,
@@ -1042,7 +1044,7 @@ def qat_onnx_single_seed(
         print(f"\n  [{vname.upper()}] Quantizing ONNX ...")
         q_onnx = quant_fn(fp32_onnx)
 
-        save_dir = models_dir / f"qat_onnx_{vname}_seed{seed}"
+        save_dir = models_dir / f"qat_onnx_{vname}_seed{seed}{_sfx}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
         import shutil
@@ -1088,7 +1090,7 @@ def qat_onnx_single_seed(
             "onnx_path": str(dest_onnx),
         }
 
-    out_path = models_dir / f"qat_onnx_seed{seed}_results.json"
+    out_path = models_dir / f"qat_onnx_seed{seed}_results{_sfx}.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(seed_results, f, indent=2, ensure_ascii=False, default=str)
     print(f"\n  Results saved -> {out_path}")

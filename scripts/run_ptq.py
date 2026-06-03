@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import EXPERIMENT_CONFIGS, LABELS, BASE_DIR, TRAINING_SEEDS
+from src.config import EXPERIMENT_CONFIGS, LABELS, BASE_DIR, TRAINING_SEEDS, fp32_seed_dir
 from src.data import load_smsa_dataset, load_tweets_dataset, select_eval_samples, prompt_eval_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
@@ -310,7 +310,7 @@ def run_multiseed_ptq(seeds: list = None, *, num_runs: int = 20, warmup: int = 5
         print(f"#  SEED {i}/{len(seeds)}: {seed}")
         print(f"{'#' * 70}")
 
-        fp32_ckpt = _MODELS_DIR / f"fp32_seed{seed}"
+        fp32_ckpt = fp32_seed_dir(seed)
         result = ptq_single_seed(
             seed,
             fp32_ckpt=fp32_ckpt,

@@ -8,7 +8,7 @@ from pathlib import Path
 from src.models import ModelManager
 from src.models.base import BaseModel, OnnxBaseModel
 from src.quantization.ptq import PTQQuantizer
-from src.config import LABELS
+from src.config import LABELS, fp32_seed_dir, fp32_control_seed_dir, _tag_suffix
 
 class SHAPExplainer:
     def __init__(self, base_model, labels, use_fp16=False):
@@ -84,9 +84,9 @@ def run_shap_attribution():
 
     _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _FP32_DIR = _PROJECT_ROOT / "models" / "fp32_seed42"
-    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / "qat_seed42_clean"
-    _FP32_CONTROL_DIR = _PROJECT_ROOT / "models" / "fp32_control_seed42"
+    _FP32_DIR = fp32_seed_dir(42)
+    _QAT_CLEAN_DIR = _PROJECT_ROOT / "models" / f"qat_seed42_clean{_tag_suffix()}"
+    _FP32_CONTROL_DIR = fp32_control_seed_dir(42)
     _MODELS_DIR = _PROJECT_ROOT / "models"
     _OUT_DIR = _PROJECT_ROOT / "results" / "attributions"
     _LOG_PATH = _OUT_DIR / "shap_errors.log"
@@ -113,7 +113,7 @@ def run_shap_attribution():
 
     def _load_onnx(variant):
         import onnxruntime as ort
-        onnx_dir = _MODELS_DIR / f"qat_onnx_{variant}_seed42"
+        onnx_dir = _MODELS_DIR / f"qat_onnx_{variant}_seed42{_tag_suffix()}"
         onnx_file = onnx_dir / f"model_qat_{variant}.onnx"
         if not onnx_file.exists():
             print(f"  [SKIP] ONNX file not found: {onnx_file}")

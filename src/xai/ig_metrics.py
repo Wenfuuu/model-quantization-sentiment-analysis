@@ -211,8 +211,9 @@ def run_ste_ig_analysis():
     _INT2LABEL = {0: "POSITIVE", 1: "NEUTRAL", 2: "NEGATIVE"}
     _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     _SUBSAMPLE_CSV = _PROJECT_ROOT / "data" / "explainability_subsample_v2.csv"
-    _FP32_DIR = _PROJECT_ROOT / "models" / "fp32_seed42"
-    _QAT_DIR = _PROJECT_ROOT / "models" / "qat_seed42_with_observers"
+    from src.config import fp32_seed_dir, _tag_suffix
+    _FP32_DIR = fp32_seed_dir(42)
+    _QAT_DIR = _PROJECT_ROOT / "models" / f"qat_seed42_with_observers{_tag_suffix()}"
     _OUT_DIR = _PROJECT_ROOT / "results" / "attributions"
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
 

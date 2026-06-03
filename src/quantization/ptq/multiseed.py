@@ -13,6 +13,7 @@ from sklearn.metrics import accuracy_score, f1_score, classification_report
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+from src.config import _tag_suffix
 from src.quantization.ptq.engine import PTQQuantizer
 from src.quantization.utils import save_quantized_model, get_model_size
 from src.evaluation.evaluator import get_model_param_memory_mb
@@ -193,7 +194,8 @@ def ptq_single_seed(
     print(f"  FP32 accuracy={fp32_metrics['accuracy']:.4f}  "
           f"macro-F1={fp32_metrics['macro_f1']:.4f}  ECE={fp32_metrics['ece']:.4f}")
 
-    fp32_save_dir = models_dir / f"ptq_fp32_seed{seed}"
+    _sfx = _tag_suffix()
+    fp32_save_dir = models_dir / f"ptq_fp32_seed{seed}{_sfx}"
     fp32_save_dir.mkdir(parents=True, exist_ok=True)
     _save_predictions_csv(fp32_pred, fp32_true, fp32_probs, test_texts,
                           fp32_save_dir / "predictions.csv")
@@ -230,7 +232,7 @@ def ptq_single_seed(
         q_model, q_time = quant_fn()
         print(f"  Quantization time: {q_time:.2f}s")
 
-        save_dir = models_dir / f"ptq_{vname}_seed{seed}"
+        save_dir = models_dir / f"ptq_{vname}_seed{seed}{_sfx}"
         result, _ = _evaluate_variant(
             vname, q_model, test_loader, test_texts, fp32_pred, save_dir,
             measure_latency=measure_latency, tokenizer=tokenizer,
@@ -241,7 +243,7 @@ def ptq_single_seed(
 
         del q_model
 
-    out_path = models_dir / f"ptq_seed{seed}_results.json"
+    out_path = models_dir / f"ptq_seed{seed}_results{_sfx}.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(seed_results, f, indent=2, ensure_ascii=False, default=str)
     print(f"\n  Results saved -> {out_path}")
