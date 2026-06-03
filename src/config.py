@@ -94,14 +94,14 @@ QAT_EXPERIMENT_CONFIGS = {
             "int4": str(BASE_DIR / "outputs" / "indobert-qat-int4-smsa" / "hf_model"),
         },
         "dataset": "smsa",
-        "output_dir": BASE_DIR / "outputs" / "qat-eager-smsa",
+        "output_dir": BASE_DIR / "outputs" / f"qat-eager-smsa{_TAG_OUT_SUFFIX}",
     },
     "fp32_control_smsa": {
         "model_paths": {
             seed: str(SEEDED_CONTROL_MODEL_DIRS[seed]) for seed in TRAINING_SEEDS
         },
         "dataset": "smsa",
-        "output_dir": BASE_DIR / "outputs" / "fp32-control-smsa",
+        "output_dir": BASE_DIR / "outputs" / f"fp32-control-smsa{_TAG_OUT_SUFFIX}",
         "description": (
             "Continued FP32 fine-tune control (no fake-quant) — matches the "
             "QAT extra-training schedule (epochs/lr/batch/seq-len/optimizer/"

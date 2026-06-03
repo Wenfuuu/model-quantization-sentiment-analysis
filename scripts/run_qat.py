@@ -78,7 +78,7 @@ if "--generate-ece" in sys.argv:
 
 from src.config import (
     BASE_DIR, DATASET_PATHS, TRAINING_SEEDS, MODEL_ID, MODEL_TAG, DEFAULT_MODEL_TAG,
-    fp32_seed_dir, fp32_control_seed_dir,
+    fp32_seed_dir, fp32_control_seed_dir, _tag_suffix,
 )
 from src.data import prompt_eval_dataset
 from src.quantization.qat.config import FinetuneQATConfig
@@ -258,7 +258,7 @@ def run_multiseed_qat(
 
     agg_dir = BASE_DIR / "outputs" / "multi-seed"
     agg_dir.mkdir(parents=True, exist_ok=True)
-    agg_path = agg_dir / "aggregated_qat_results.json"
+    agg_path = agg_dir / f"aggregated_qat_results{_tag_suffix()}.json"
     agg = {
         "seeds": seeds,
         "n_seeds": len(seeds),
@@ -361,7 +361,7 @@ def run_multiseed_fp32_control(
 
     agg_dir = BASE_DIR / "outputs" / "multi-seed"
     agg_dir.mkdir(parents=True, exist_ok=True)
-    agg_path = agg_dir / "aggregated_fp32_control_results.json"
+    agg_path = agg_dir / f"aggregated_fp32_control_results{_tag_suffix()}.json"
     save_aggregated_results(agg, agg_path, exclude_raw=False)
     print(f"\n  Aggregated results saved -> {agg_path}")
 

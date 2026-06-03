@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import EXPERIMENT_CONFIGS, LABELS, BASE_DIR, TRAINING_SEEDS, fp32_seed_dir
+from src.config import EXPERIMENT_CONFIGS, LABELS, BASE_DIR, TRAINING_SEEDS, fp32_seed_dir, _tag_suffix
 from src.data import load_smsa_dataset, load_tweets_dataset, select_eval_samples, prompt_eval_dataset
 from src.models import ModelManager
 from src.quantization.ptq import PTQQuantizer
@@ -391,7 +391,7 @@ def run_multiseed_ptq(seeds: list = None, *, num_runs: int = 20, warmup: int = 5
     # ---- Save aggregated JSON ----
     agg_dir = BASE_DIR / "outputs" / "multi-seed"
     agg_dir.mkdir(parents=True, exist_ok=True)
-    agg_path = agg_dir / "aggregated_ptq_results.json"
+    agg_path = agg_dir / f"aggregated_ptq_results{_tag_suffix()}.json"
 
     agg = {"seeds": seeds, "n_seeds": len(seeds)}
     for v in variants:

@@ -1,16 +1,3 @@
-"""Cross-variant deployment-recommendation synthesizer.
-
-Reads the classification, stability, and faithfulness summaries that the
-existing pipeline already produces and emits a constraint-keyed
-recommendation table (interpretability-critical, latency-critical,
-size-critical) plus a machine-readable rationale per variant.
-
-The module is strictly artifact-driven: every value in the output traces
-back to a key in `results/` (or `outputs/multi-seed/`) — nothing is
-recomputed from raw predictions/attributions here. Decision thresholds are
-named constants in `src.config`.
-"""
-
 from __future__ import annotations
 
 import json
@@ -30,6 +17,7 @@ from src.config import (
     DEPLOYMENT_STABILITY_RHO_ACCEPTABLE,
     DEPLOYMENT_VARIANT_ALIASES,
     DEPLOYMENT_VARIANTS,
+    _tag_suffix,
 )
 
 _RESULTS_DIR = BASE_DIR / "results"
@@ -39,17 +27,10 @@ _CLASSIFICATION_CSV = _RESULTS_DIR / "classification_summary_multiseed.csv"
 _ECE_SUMMARY_CSV    = _RESULTS_DIR / "ece_summary.csv"
 _STABILITY_JSON     = _RESULTS_DIR / "stability_results.json"
 _FAITHFULNESS_CSV   = _RESULTS_DIR / "faithfulness_summary.csv"
-_PTQ_AGG_JSON       = _MULTISEED_DIR / "aggregated_ptq_results.json"
-_QAT_AGG_JSON       = _MULTISEED_DIR / "aggregated_qat_results.json"
+_PTQ_AGG_JSON       = _MULTISEED_DIR / f"aggregated_ptq_results{_tag_suffix()}.json"
+_QAT_AGG_JSON       = _MULTISEED_DIR / f"aggregated_qat_results{_tag_suffix()}.json"
 
-_FAITHFULNESS_K = 5  # comprehensiveness floor is defined at top-k=5
-
-
-# ---------------------------------------------------------------------------
-# Loaders — each one reads ONE existing summary and returns a per-variant dict.
-# Missing artifacts produce empty dicts (not exceptions) so the synthesizer
-# can render a partial table when the user has only run some phases.
-# ---------------------------------------------------------------------------
+_FAITHFULNESS_K = 5
 
 def _safe_float(x: Any) -> Optional[float]:
     try:
@@ -60,10 +41,8 @@ def _safe_float(x: Any) -> Optional[float]:
         return None
     return v
 
-
 def _canon(variant: str) -> str:
     return DEPLOYMENT_VARIANT_ALIASES.get(variant, variant).strip().lower()
-
 
 def _load_classification() -> Dict[str, Dict[str, Optional[float]]]:
     if not _CLASSIFICATION_CSV.exists():
@@ -90,7 +69,6 @@ def _load_classification() -> Dict[str, Dict[str, Optional[float]]]:
         }
     return out
 
-
 def _load_ece_summary() -> Dict[str, Optional[float]]:
     if not _ECE_SUMMARY_CSV.exists():
         return {}
@@ -101,7 +79,6 @@ def _load_ece_summary() -> Dict[str, Optional[float]]:
         _canon(str(r["variant"])): _safe_float(r["mean_ece"])
         for _, r in df.iterrows()
     }
-
 
 def _load_stability() -> Dict[str, Dict[str, Optional[float]]]:
     if not _STABILITY_JSON.exists():
