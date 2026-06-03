@@ -11,6 +11,8 @@ from pathlib import Path
 import pandas as pd
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 _DATA_DIR     = _PROJECT_ROOT / "data" / "processed"
 _SMSA_DIR     = _PROJECT_ROOT / "datasets"
 _MODELS_DIR   = _PROJECT_ROOT / "models"
