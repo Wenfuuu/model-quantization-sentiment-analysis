@@ -881,6 +881,7 @@ def run_large_sample_cross_seed_stability(
         "ptq_fp16", "ptq_int8", "ptq_int4",
         "qat_fp32", "qat_onnx_fp16", "qat_onnx_int8", "qat_onnx_int4",
     ),
+    eval_dataset: str = "smsa",
 ) -> Optional[dict]:
     import json as _json
     import pandas as pd
@@ -912,9 +913,18 @@ def run_large_sample_cross_seed_stability(
 
     _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     _DATA_DIR = _PROJECT_ROOT / "data" / "processed"
-    _TEST_CSV = _DATA_DIR / "smsa_test_v2.csv"
-    _VAL_CSV  = _DATA_DIR / "smsa_val_v2.csv"
-    _OUT_DIR  = _PROJECT_ROOT / "results" / "attributions"
+    if eval_dataset == "smsa":
+        _TEST_CSV = _DATA_DIR / "smsa_test_v2.csv"
+        _VAL_CSV  = _DATA_DIR / "smsa_val_v2.csv"
+        _OUT_DIR  = _PROJECT_ROOT / "results" / "attributions"
+        _JSON_NAME = "large_sample_stability.json"
+    elif eval_dataset == "nusax_ind":
+        _TEST_CSV = _DATA_DIR / "nusax_ind_test.csv"
+        _VAL_CSV  = _DATA_DIR / "nusax_ind_test.csv"  # NusaX has no separate val split; reuse test
+        _OUT_DIR  = _PROJECT_ROOT / "results" / "attributions_nusax_ind"
+        _JSON_NAME = "large_sample_stability_nusax_ind.json"
+    else:
+        raise ValueError(f"unknown eval_dataset={eval_dataset!r}; expected 'smsa' or 'nusax_ind'")
     _ARTIFACT_DIR = _PROJECT_ROOT / "outputs" / "multi-seed" / "large-sample-stability"
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
     _ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -960,6 +970,9 @@ def run_large_sample_cross_seed_stability(
                 UserWarning, stacklevel=2,
             )
 
+    # Per-dataset filename suffix so a NusaX run doesn't overwrite SMSA artifacts
+    _CSV_SFX = "" if eval_dataset == "smsa" else f"_{eval_dataset}"
+
     per_seed_dfs: dict = {}
     for seed in TRAINING_SEEDS:
         print(f"\n  ---- seed={seed} ----")
@@ -976,7 +989,7 @@ def run_large_sample_cross_seed_stability(
         if df_seed.empty:
             print(f"  [WARN seed={seed}] No stability rows computed.")
             continue
-        per_seed_csv = _ARTIFACT_DIR / f"stability_perSample_seed{seed}.csv"
+        per_seed_csv = _ARTIFACT_DIR / f"stability_perSample_seed{seed}{_CSV_SFX}.csv"
         df_seed.to_csv(per_seed_csv, index=False, encoding="utf-8")
         print(f"  [seed={seed}] saved {len(df_seed)} rows -> {per_seed_csv.name}")
         per_seed_dfs[seed] = df_seed
@@ -1028,7 +1041,7 @@ def run_large_sample_cross_seed_stability(
             df_sum["p_bonferroni"] = [round(float(p), 6) for p in p_bonf]
             df_sum["significant_bonferroni"] = df_sum["p_bonferroni"] < 0.05
             df_sum["bonferroni_alpha"] = round(0.05 / max(1, n_comp), 6)
-            sum_csv = _ARTIFACT_DIR / f"stability_summary_seed{seed}.csv"
+            sum_csv = _ARTIFACT_DIR / f"stability_summary_seed{seed}{_CSV_SFX}.csv"
             df_sum.to_csv(sum_csv, index=False, encoding="utf-8")
             print(f"  [seed={seed}] summary ({n_comp} comparisons) -> {sum_csv.name}")
         per_seed_summaries[seed] = df_sum
@@ -1037,7 +1050,7 @@ def run_large_sample_cross_seed_stability(
     aggregated = aggregate_seed_results(seed_results_for_agg) if len(seed_results_for_agg) >= 2 else None
 
     all_per_sample = pd.concat(per_seed_dfs.values(), ignore_index=True)
-    pooled_path = _ARTIFACT_DIR / "stability_perSample_all_seeds.csv"
+    pooled_path = _ARTIFACT_DIR / f"stability_perSample_all_seeds{_CSV_SFX}.csv"
     all_per_sample.to_csv(pooled_path, index=False, encoding="utf-8")
     print(f"\n  pooled per-sample rows -> {pooled_path.name}  (n={len(all_per_sample)})")
 
@@ -1086,7 +1099,7 @@ def run_large_sample_cross_seed_stability(
         df_agg["p_bonferroni"] = [round(float(p), 6) for p in p_bonf]
         df_agg["significant_bonferroni"] = df_agg["p_bonferroni"] < 0.05
         df_agg["bonferroni_alpha"] = round(0.05 / max(1, bonf_n_comparisons), 6)
-        agg_csv = _ARTIFACT_DIR / "stability_aggregate_acrossSeeds.csv"
+        agg_csv = _ARTIFACT_DIR / f"stability_aggregate_acrossSeeds{_CSV_SFX}.csv"
         df_agg.to_csv(agg_csv, index=False, encoding="utf-8")
         print(f"  aggregate across seeds -> {agg_csv.name}")
 
@@ -1110,14 +1123,16 @@ def run_large_sample_cross_seed_stability(
         "aggregate_across_seeds": df_agg.to_dict(orient="records") if not df_agg.empty else [],
         "seed_aggregated_metrics": aggregated,
     }
-    json_path = _ARTIFACT_DIR / "large_sample_stability.json"
+    json_path = _ARTIFACT_DIR / _JSON_NAME
     if aggregated is not None:
-        save_aggregated_results(aggregated, _ARTIFACT_DIR / "seed_aggregated_metrics.json", exclude_raw=False)
+        save_aggregated_results(aggregated, _ARTIFACT_DIR / f"seed_aggregated_metrics{_CSV_SFX}.json", exclude_raw=False)
     with open(json_path, "w", encoding="utf-8") as _f:
         _json.dump(payload, _f, indent=2, default=float)
     print(f"  payload -> {json_path.name}")
 
-    if not df_agg.empty:
+    # Renderer assumes the canonical SMSA artifact names; for NusaX we only
+    # write the JSON+CSVs and let the paper read them directly.
+    if not df_agg.empty and eval_dataset == "smsa":
         render_large_sample_stability(
             json_path=json_path,
             csv_path=_ARTIFACT_DIR / "stability_aggregate_acrossSeeds.csv",
