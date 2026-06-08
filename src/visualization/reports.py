@@ -516,7 +516,9 @@ def render_table(name: str, json_path=None, csv_path=None, **kwargs):
     """Dispatcher — render any registered table by name.
 
     Names: 'qat_drift_decomposition', 'large_sample_stability',
-    'stability_by_family' (alias 'generalization'),
+    'stability_by_family' (alias 'generalization') — renders both families,
+    'stability_by_family_gradient' / 'stability_by_family_perturbation' —
+    render a single family,
     'deployment_recommendation'.
     """
     if name == "qat_drift_decomposition":
@@ -526,6 +528,10 @@ def render_table(name: str, json_path=None, csv_path=None, **kwargs):
     if name in ("stability_by_family", "generalization"):
         return render_stability_by_family(json_path=json_path,
                                           csv_paths=kwargs.get("csv_paths"))
+    if name in ("stability_by_family_gradient",
+                "stability_by_family_perturbation"):
+        return _render_from_spec(TABLE_SPECS[name],
+                                 json_path=json_path, csv_path=csv_path)
     if name == "deployment_recommendation":
         return render_deployment_recommendation(
             json_path=json_path, csv_path=csv_path,
