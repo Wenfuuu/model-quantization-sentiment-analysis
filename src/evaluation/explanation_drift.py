@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from pathlib import Path
 from scipy import stats
@@ -821,7 +822,9 @@ def _generate_per_seed_attributions(
                             [s for _, s in r["all_tokens_ordered"]],
                             dtype=np.float32,
                         )
-                    np.save(out_path, word_scores)
+                    tmp_path = out_path.with_suffix(".npy.tmp")
+                    np.save(tmp_path, word_scores)
+                    os.replace(tmp_path, out_path)
                     n_method_saved += 1
                     stats["saved"] += 1
                 except Exception as exc:
